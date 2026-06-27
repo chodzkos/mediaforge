@@ -14,14 +14,17 @@ Zbuduj fundament pakietu mediaforge:
 0. `uv sync` (pociąga chodzkos-gui-kit z gita, pin do taga v0.5.0 — jest w pyproject).
 1. Layout src/mediaforge/{core,gui,cli} zgodny z ARCHITECTURE.md; core BEZ importów Qt.
 2. core/config.py: JEST w repo jako cienka warstwa nad chodzkos_gui_kit.config.Config —
-   dodaj typowane akcesory dla kluczy mediaforge (motyw, ostatnie katalogi, profil obliczeniowy,
-   rejestr dostawców, profile źródeł). NIE reimplementuj magazynu/platformdirs. Debounce po
+   dodaj typowane akcesory dla kluczy mediaforge (motyw, ostatnie katalogi, profil obliczeniowy
+   per maszyna, rejestr dostawców per zadanie). Profile źródeł NIE tu — to dane relacyjne,
+   idą do tabeli SQLite source_profiles (pkt 5). NIE reimplementuj magazynu/platformdirs. Debounce po
    stronie GUI (on_dirty → QTimer → flush()).
 3. core/secrets.py: JEST w repo (keyring). W razie potrzeby rozszerz o nazewnictwo kluczy per dostawca.
-4. core/jobs/: kolejka oparta o pulę QThread + tabelę SQLite `jobs` (status, progress,
-   error_message, retry). BEZ Celery/Redis.
-5. core/library/: schemat SQLite (recordings, jobs, transcripts, summaries, tags, settings,
-   source_profiles) + lekkie migracje (user_version).
+4. core/jobs/: kolejka na `ThreadPoolExecutor` (std-lib) + tabela SQLite `jobs` (status, progress,
+   error_message, retry). core BEZ Qt — QThread łamie regułę i nie działa w CLI (brak pętli Qt);
+   GUI to adapter odświeżający widok przez QTimer. BEZ Celery/Redis. Workery nie dotykają obiektów Qt.
+5. core/library/: schemat SQLite (recordings, jobs, transcripts, summaries, tags,
+   source_profiles) + lekkie migracje (user_version). BEZ tabeli settings — preferencje skalarne
+   (motyw, ostatnie katalogi, profil obliczeniowy, rejestr dostawców) trzyma config.json (config.py).
 6. gui/: powłoka okna WPINAJĄCA chodzkos-gui-kit — NIE pisz własnego theme.py/dialogów:
    - `ThemeManager(app, cfg)` + `apply("auto")` + `attach_titlebar(window)`;
    - górny pasek wg GUI_STANDARD §6: logo + przełącznik motywu (auto/jasny/ciemny) + About;

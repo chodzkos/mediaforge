@@ -18,7 +18,7 @@ src/mediaforge/
 │   │   ├── summarize.py     # klient LiteLLM gateway (lokal + chmura)
 │   │   └── slides.py        # detekcja zmian klatek + opis VLM
 │   ├── library/             # SQLite: model danych, FTS, później wektory
-│   ├── jobs/                # kolejka: pula QThread + tabela jobs (bez Celery/Redis)
+│   ├── jobs/                # kolejka: ThreadPoolExecutor (std-lib) + tabela jobs (Qt-free; bez Celery/Redis)
 │   ├── config.py            # cienka warstwa nad Config z gui-kit (platformdirs + atomowy zapis)
 │   ├── secrets.py           # keyring (sekrety — poza zakresem gui-kit)
 │   └── naming.py            # szablony nazw + nazwa z AI
@@ -56,7 +56,7 @@ Implementacje: `RecorderEngine` (rdzeń produktu), `ImporterEngine`, `Downloader
   → zapis do biblioteki (SQLite) + powiadomienie (opcjonalnie Telegram)
 ```
 
-Każdy krok to osobne zadanie w kolejce (`jobs`), wznawialne po awarii. Pipeline jest **sekwencyjny pod kątem VRAM** — Whisper, VLM i LLM nie ładują się równocześnie na 24 GB; każdy etap zwalnia GPU przed następnym.
+Każdy krok to osobne zadanie w kolejce (`jobs`), wznawialne po awarii. Kolejka to **`ThreadPoolExecutor` w `core`** (Qt-free → działa też w headless CLI; QThread wymaga pętli Qt i złamałby regułę „core bez Qt"). Workery piszą tylko stan do tabeli `jobs` i **nie dotykają obiektów Qt**; GUI to adapter odświeżający widok przez `QTimer` (poll). Pipeline jest **sekwencyjny pod kątem VRAM** — Whisper, VLM i LLM nie ładują się równocześnie na 24 GB; każdy etap zwalnia GPU przed następnym.
 
 ## Układ „jeden materiał = jeden folder"
 
@@ -79,9 +79,9 @@ SQLite jest indeksem/cache nad tymi folderami — folder pozostaje przenośny i 
 - `jobs` — id, recording_id, job_type, status, progress, error_message, timestamps (kolejka + retry)
 - `transcripts` — id, recording_id, language, model, text, segments_json
 - `summaries` — id, recording_id, summary_type, model, content
-- `tags`, `settings`
-- `source_profiles` — id, domain, engine, auth_method, quality_preset, category, tags, naming_template, note_mode, language (profile per domena, definiowane przez użytkownika)
-- `settings` przechowuje też: przypisania dostawców per zadanie (rejestr) oraz profil obliczeniowy per maszyna (fingerprint → tier/model)
+- `tags`
+- `source_profiles` — id, domain, engine, auth_method, quality_preset, category, tags, naming_template, note_mode, language (profile per domena, definiowane przez użytkownika; **dane relacyjne, odpytywane po domenie → SQLite**)
+- Preferencje skalarne (motyw, ostatnie katalogi, profil obliczeniowy per maszyna, rejestr dostawców per zadanie) → **config.json przez `core/config.py`** (Config z kitu jest magazynem ustawień). `source_profiles` to jedyne dane configu trzymane w SQLite — bez osobnej tabeli `settings` (byłaby drugim magazynem ustawień obok config.json).
 - FTS5 nad `transcripts.text` i `summaries.content` (S7); baza wektorowa dołożona później.
 
 ## Transkrypcja — backend wymienny (kluczowe pod Blackwell)

@@ -9,7 +9,7 @@ Legenda statusu: ☐ todo · ◐ w toku · ☑ done.
 ## ☑ S0 — Fundament
 **Gałąź:** `feat/s0-foundation`
 
-Szkielet pakietu (`core`/`gui`/`cli`), `pyproject` + uv, ruff/mypy/pytest, CI (Windows). Config (warstwa nad `Config` z gui-kit), `secrets` (keyring), logowanie, globalna obsługa błędów. Schemat SQLite + migracje. Kolejka zadań (pula QThread + tabela `jobs`, retry). Powłoka GUI **wpinająca chodzkos-gui-kit** (`ThemeManager` + `attach_titlebar`, dialogi, `LogView`) wg `GUI_STANDARD.md` z repo kitu; górny pasek (logo + motyw + About), status bar.
+Szkielet pakietu (`core`/`gui`/`cli`), `pyproject` + uv, ruff/mypy/pytest, CI (Windows). Config (warstwa nad `Config` z gui-kit), `secrets` (keyring), logowanie, globalna obsługa błędów. Schemat SQLite + migracje. Kolejka zadań (`ThreadPoolExecutor` std-lib + tabela `jobs`, retry; core Qt-free, GUI to adapter z `QTimer`). Powłoka GUI **wpinająca chodzkos-gui-kit** (`ThemeManager` + `attach_titlebar`, dialogi, `LogView`) wg `GUI_STANDARD.md` z repo kitu; górny pasek (logo + motyw + About), status bar.
 
 **Akceptacja:** `uv run mediaforge` otwiera okno z motywem i pustą biblioteką; CLI `--help` działa; pusta kolejka zadań przechodzi smoke-test; CI zielone.
 

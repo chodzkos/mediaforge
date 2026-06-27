@@ -30,7 +30,7 @@ Czytaj ten plik przed każdym etapem. Zawiera konwencje, pułapki i twarde grani
 - **VRAM sekwencyjnie:** nie ładuj Whispera, VLM i LLM równocześnie. Każdy etap zwalnia GPU przed następnym.
 - **FFmpeg jako subprocess**, nie biblioteka linkowana — utrzymuje licencję MIT i izoluje crash. NVENC do enkodowania (HEVC/AV1), WASAPI loopback do dźwięku systemowego.
 - **yt-dlp** zmienia się szybko — luźny pin + opcja „Aktualizuj yt-dlp". Etap S5, nie wcześniej.
-- **Nie wprowadzaj** Celery/Redis/FastAPI/Tauri/Electron/vLLM. Kolejka = pula QThread + tabela `jobs`. Streszczenia = istniejący gateway LiteLLM.
+- **Nie wprowadzaj** Celery/Redis/FastAPI/Tauri/Electron/vLLM. Kolejka = **`ThreadPoolExecutor` (std-lib) + tabela `jobs`** w core (Qt-free — QThread wymaga pętli Qt i łamie regułę „core bez Qt", a CLI nie miałoby pętli); GUI to adapter odświeżający widok przez `QTimer`. Streszczenia = istniejący gateway LiteLLM.
 - **PySide6, nie PyQt6** (PyQt6 jest GPL; przy MIT używamy PySide6/LGPL). **GUI stoi na `chodzkos-gui-kit`** — NIE pisz własnego `theme.py` ani dialogów. Używaj `ThemeManager` (`apply`/`attach_titlebar`), `qt.dialogs.*`, widgetów `PathEntry`/`FileList`/`LogView`/`HelpWindow` (+ helpery `help_html`), `get_icon`/`ICON_MAP`. `GUI_STANDARD.md` mieszka w repo kitu (nie kopiuj go tutaj). Pin do **taga** (`v0.5.0`); podniesienie wersji = osobny commit `chore:` + testy. Szczegóły: `ARCHITECTURE.md` → Integracja z chodzkos-gui-kit.
 
 ## Anti-amnesia (GUI)
