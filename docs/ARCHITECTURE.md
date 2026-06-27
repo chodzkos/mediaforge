@@ -21,6 +21,7 @@ src/mediaforge/
 │   ├── jobs/                # kolejka: ThreadPoolExecutor (std-lib) + tabela jobs (Qt-free; bez Celery/Redis)
 │   ├── config.py            # cienka warstwa nad Config z gui-kit (platformdirs + atomowy zapis)
 │   ├── secrets.py           # keyring (sekrety — poza zakresem gui-kit)
+│   ├── dependencies.py      # doctor: detekcja narzędzi/GPU (nvidia-smi, bez torcha) → zasila compute + status bar
 │   └── naming.py            # szablony nazw + nazwa z AI
 ├── gui/             # PySide6 — wpina chodzkos-gui-kit (ThemeManager, dialogi, widgety)
 └── cli/             # Typer (te same operacje co GUI, headless)
@@ -166,3 +167,27 @@ Wszystkie aplikacje (chodzkos) stoją na wspólnym kicie. mediaforge **konsumuje
 - **Debounce configu** po stronie GUI: `Config(on_dirty=...)` → `QTimer` → `flush()` po ~1 s.
 
 **Luka do uzupełnienia (ikony):** obecny zestaw ikon kitu pochodzi z IcoForge/EpubForge (edytor, pliki: pencil/eraser/save/folder-open…). Brakuje ikon specyficznych dla mediaforge: nagrywanie, mikrofon, pobieranie, napisy/transkrypt, streszczenie. Zgodnie z regułą kitu „kod wchodzi przez ekstrakcję ze sprawdzonej aplikacji" — najpierw używamy ikon w mediaforge (lokalnie), a po sprawdzeniu dokładamy SVG (Lucide/ISC) do `assets/icons/` + `ICON_MAP` kitu jako osobny PR do gui-kit. Do tego czasu: `standardIcon` Qt lub lokalny fallback. **Reguła trzech** dla nowych wspólnych widgetów obowiązuje tak samo (ekstrakcja dopiero przy ≥2 konsumentach).
+
+## Diagnostyka środowiska (doctor)
+
+`core/dependencies.py` — wzorzec przeniesiony z pdf2md (funkcje odporne na brak narzędzia: zwracają False/pusty dict, nigdy nie rzucają; `check_all()` jako agregat). Qt-free. Sprawdza: system, ffmpeg (+ które enkodery: `h264_nvenc`/`hevc_nvenc`/`av1_nvenc`/`libx264`), whisper.cpp (binarka), GPU, gateway LiteLLM (endpoint z configu), klucze dostawców w keyring (**same booleany, nigdy wartości**).
+
+**Detekcja GPU bez torcha** — kluczowa różnica względem pdf2md. Domyślne ścieżki mediaforge (whisper.cpp, NVENC) są torch-free, więc doctor używa `nvidia-smi`, a sonda torcha (`torch.zeros(1).cuda()`) to wyłącznie dodatek odpalany tylko, gdy torch jest zainstalowany (tor HF). Sonda nvidia-smi jest odporna jak reszta: gate `command_in_path` (brak sterowników/inny GPU → puste), sprawdzenie `returncode` (sterownik w złym stanie → puste), brak parsowania stderr. **compute_cap pobierane osobnym zapytaniem** (starsze sterowniki mogą nie mieć tego pola), a gdy nie przyjdzie lub zwróci `[Not Supported]` → **arch mapowany z nazwy GPU** (`arch_from_name`: RTX 5090→Blackwell, GTX 1070→Pascal). Dzięki temu `classify()` dostaje arch niezależnie od wersji nvidia-smi.
+
+**Granica ekstrakcji GPU (ważne na później):** `check_gpu()` zwraca **surowe fakty** (nazwa/VRAM/compute_cap) i to jest część generyczna → do kitu. Mapowanie arch (`detect_arch`/`arch_from_name`/`resolved_arch`) oraz `classify()` to **mediaforge-specyficzna polityka tierów A/B/C** → zostaje w aplikacji. Przy ekstrakcji: kit daje `check_gpu()` (surowe), mediaforge bierze te dane, mapuje arch i woła swój `classify()`. **Nie wciągać `classify` do kitu** — to polityka, nie generyczna sonda. (`check_all()` wzbogaca sekcję GPU o arch dla wyświetlania, ale samo `check_gpu` pozostaje surowe.)
+
+**Domknięcie `compute.py`** — `detect_arch(compute_cap)` mapuje compute capability na `GPUArch` (sm_120→Blackwell, 6.1→Pascal, …) i karmi `compute.classify()`, które dotąd dostawało `arch=UNKNOWN`. Dzięki temu doctor raportuje rozwiązany **tier A/B/C** i co leci lokalnie vs chmura. To samo `check_all()` zasila status bar GUI — **jedno źródło detekcji**, GUI nie powtarza wykrywania.
+
+Doctor rodzi się jako osobny przyrost po S0 i rośnie z zależnościami: S1 dokłada test enkoderów NVENC, S3 sprawdzenie buildu whisper.cpp (+ opcjonalna sonda torcha), S4 modele LiteLLM i dostawców. Komenda CLI: `mediaforge-cli doctor` (render przez `render_report`, opcja `--json` dla surowych danych).
+
+### Warstwy i ścieżka do kitu
+
+Doctor to nie jeden byt, tylko trzy warstwy — i tylko część jest współdzielna:
+
+- **Warstwa 1 — prezentacja** (`render_report`): generyczny render sekcja/status/hint, operuje wyłącznie na danych z `check_all()`. App-niezależna → docelowo do kitu.
+- **Warstwa 2 — sondy uniwersalne** (`command_in_path`, `api_key_present`, `check_gpu`): generyczne → docelowo do kitu.
+- **Warstwa 3 — definicje „co sprawdzać"** (ffmpeg, whisper.cpp, silniki transkrypcji): wyłącznie mediaforge → **zostaje w aplikacji**.
+
+Kluczowe: mediaforge buduje doctora **z rozdzieloną prezentacją od sond** (dane w `check_all()`, render osobno) — inaczej niż pdf2md, którego `doctor()` splata budowanie tabel z sondami inline. Dzięki temu **mediaforge jest czystym wzorcem do ekstrakcji**, a nie pdf2md.
+
+Ekstrakcja **z działającego kodu, nie z przewidywań**: nie projektujemy frameworka teraz. Gdy mediaforge doctor działa, mamy dwa działające (pdf2md + mediaforge) + trzecią potrzebę (EpubForge: Java/Calibre/Pandoc) → reguła trzech spełniona. Wtedy ekstrahujemy **cienki** framework (warstwa 1 + prymitywy warstwy 2) ze wzorca mediaforge; **pdf2md migruje** na niego (rozplątując swoje inline-tabele), a EpubForge konsumuje go jako trzeci (własne sondy), **nie jako trzecią kopię**. Framework jest cienki, bo sondy mediaforge są **heterogeniczne** (ffmpeg vs GPU vs LiteLLM — różne kształty), więc współdzieli się mechanizm, nie bogata struktura silnikowa.

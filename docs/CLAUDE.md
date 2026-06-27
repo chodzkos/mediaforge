@@ -46,3 +46,12 @@ ruff + mypy --strict + pytest zielone · zaktualizowany CHANGELOG · zaktualizow
 - **Teraz (rób od razu):** modularność przez **rejestry oparte na `Protocol`** (jak `AcquisitionEngine`, `TranscriptionBackend`). Nowe kategorie rozszerzalne (eksportery, tryby notatek, style streszczeń, kanały powiadomień, VLM/tłumaczenie) projektuj jako rejestr + Protocol. Opcjonalne ciężkie zależności → **extras w pyproject**, nie własny mechanizm.
 - **NIE buduj** pełnego systemu pluginów (osobne paczki, instalacja, włączanie w UI) na tym etapie — to over-engineering dla aplikacji jednoosobowej i zaprojektujesz złe API, zanim powstaną 3–4 realne pluginy.
 - **Później (po 1.0, jeśli ≥3 funkcje tego chcą):** zewnętrzne pluginy przez **entry points** (`importlib.metadata`, grupa `mediaforge.<kategoria>`), nigdy własny loader. Konwencję grup standaryzujemy między projektami; wspólny kod (mini `Registry` + loader) wyodrębniamy do wspólnej paczki dopiero po sprawdzeniu w ≥2 projektach (pdf2md + mediaforge).
+
+## Diagnostyka (doctor) — jedno źródło detekcji
+
+- Detekcja narzędzi/GPU = wyłącznie `core/dependencies.py` (`check_all()`). **Nie duplikuj** wykrywania ad-hoc w GUI — status bar i komenda `doctor` czytają to samo `check_all()`. Jeśli S0 dodał doraźną detekcję do status bara, skonsoliduj ją tutaj.
+- **Trzymaj trzy warstwy rozdzielone** (nie splataj jak pdf2md `doctor()`): prezentacja (`render_report`, operuje tylko na danych) ≠ sondy uniwersalne (`command_in_path`/`api_key_present`/`check_gpu`) ≠ definicje „co sprawdzać" (ffmpeg/whisper.cpp — specyfik mediaforge). `check_all()` zwraca **dane**, render jest osobny.
+- **Nie buduj frameworka diagnostycznego w kicie teraz.** Ekstrakcja dopiero z dwóch działających doctorów (pdf2md + mediaforge) + potrzeby EpubForge. Mediaforge ma być czystym wzorcem do ekstrakcji.
+- **GPU przez `nvidia-smi`, nie torch** (domyślne ścieżki torch-free). Sonda torcha tylko jako dodatek, gdy torch obecny. Sonda nvidia-smi musi być odporna: gate `command_in_path`, sprawdzenie `returncode`, `compute_cap` osobnym zapytaniem z **fallbackiem arch z nazwy GPU** (starsze sterowniki nie mają `compute_cap`).
+- **Granica ekstrakcji GPU:** `check_gpu()` zwraca surowe fakty (→ kit). Mapowanie arch i `classify()` to polityka tierów mediaforge (→ zostaje w aplikacji). Nie wciągaj `classify` do kitu.
+- Checki odporne (False/pusty dict, nigdy wyjątek). Klucze dostawców jako booleany — **nigdy nie zwracaj wartości sekretów**.
