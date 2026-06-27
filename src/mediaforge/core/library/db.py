@@ -46,7 +46,8 @@ def _transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 
 
 # Krok migracji v1 — pełny schemat startowy (recordings/jobs/transcripts/
-# summaries/tags/settings/source_profiles).
+# summaries/tags/source_profiles). Preferencje skalarne (motyw, katalogi, profil
+# obliczeniowy, rejestr dostawców) trzyma config.json (core/config.py), nie SQLite.
 _MIGRATION_V1 = """
 CREATE TABLE recordings (
     id            INTEGER PRIMARY KEY,
@@ -101,11 +102,6 @@ CREATE TABLE tags (
     tag           TEXT NOT NULL
 );
 CREATE INDEX idx_tags_tag ON tags(tag);
-
-CREATE TABLE settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT
-);
 
 CREATE TABLE source_profiles (
     id              INTEGER PRIMARY KEY,
