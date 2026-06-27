@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# uv
+
+# Narzędzia
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Środowisko / sekrety
+.env
+*.env
+
+# Dane aplikacji / wyjścia (nigdy nie commitujemy zarchiwizowanych materiałów)
+/library/
+/recordings/
+/output/
+*.mp4
+*.mkv
+*.mov
+*.m4a
+*.mp3
+*.wav
+*.opus
+*.srt
+*.vtt
+*.db
+*.sqlite
+
+# Modele AI (duże binaria)
+*.gguf
+*.bin
+*.pt
+*.safetensors
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
