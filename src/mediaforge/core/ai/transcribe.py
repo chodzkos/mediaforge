@@ -12,25 +12,25 @@ Patrz docs/CLAUDE.md (sekcja Blackwell).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from mediaforge.core.compute import GPUArch, classify
 
 
-class Backend(str, Enum):
-    WHISPERCPP = "whispercpp"            # DEFAULT
-    FASTER_WHISPER = "faster_whisper"    # tylko compute_type=float16 na sm_120
-    INSANELY_FAST = "insanely_fast"      # tor mocy (extra: transcribe-hf)
-    CLOUD = "cloud"                      # przez LiteLLM
+class Backend(StrEnum):
+    WHISPERCPP = "whispercpp"  # DEFAULT
+    FASTER_WHISPER = "faster_whisper"  # tylko compute_type=float16 na sm_120
+    INSANELY_FAST = "insanely_fast"  # tor mocy (extra: transcribe-hf)
+    CLOUD = "cloud"  # przez LiteLLM
 
 
 @dataclass(slots=True)
 class TranscribeOptions:
     backend: Backend = Backend.WHISPERCPP
     language: str | None = None  # None = autodetekcja (PL/EN)
-    diarize: bool = False        # wymaga pyannote (extra) + tokenu HF w keyring
+    diarize: bool = False  # wymaga pyannote (extra) + tokenu HF w keyring
 
 
 @dataclass(slots=True)

@@ -6,7 +6,7 @@ Legenda statusu: ☐ todo · ◐ w toku · ☑ done.
 
 ---
 
-## ☐ S0 — Fundament
+## ☑ S0 — Fundament
 **Gałąź:** `feat/s0-foundation`
 
 Szkielet pakietu (`core`/`gui`/`cli`), `pyproject` + uv, ruff/mypy/pytest, CI (Windows). Config (warstwa nad `Config` z gui-kit), `secrets` (keyring), logowanie, globalna obsługa błędów. Schemat SQLite + migracje. Kolejka zadań (pula QThread + tabela `jobs`, retry). Powłoka GUI **wpinająca chodzkos-gui-kit** (`ThemeManager` + `attach_titlebar`, dialogi, `LogView`) wg `GUI_STANDARD.md` z repo kitu; górny pasek (logo + motyw + About), status bar.

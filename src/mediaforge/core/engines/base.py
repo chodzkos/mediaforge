@@ -9,15 +9,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 
-class SourceKind(str, Enum):
-    SCREEN = "screen"      # nagrywanie ekranu / audio
-    LOCAL_FILE = "local"   # import pliku z dysku
-    URL = "url"            # pobranie (yt-dlp, etap S5, tylko bez DRM)
+class SourceKind(StrEnum):
+    SCREEN = "screen"  # nagrywanie ekranu / audio
+    LOCAL_FILE = "local"  # import pliku z dysku
+    URL = "url"  # pobranie (yt-dlp, etap S5, tylko bez DRM)
 
 
 @dataclass(slots=True)

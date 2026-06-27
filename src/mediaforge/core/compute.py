@@ -15,21 +15,21 @@ Ten moduł jest niezależny od warstwy transkrypcji/LLM (brak importów w górę
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class GPUArch(str, Enum):
+class GPUArch(StrEnum):
     BLACKWELL = "blackwell"  # RTX 50xx (sm_120) — uwaga: int8 w CTranslate2 nie działa
-    ADA = "ada"              # RTX 40xx
-    AMPERE = "ampere"        # RTX 30xx / A-series
-    TURING = "turing"        # RTX 20xx / GTX 16xx
-    PASCAL = "pascal"        # GTX 10xx (np. 1070) — bez Tensor cores, słaby FP16
+    ADA = "ada"  # RTX 40xx
+    AMPERE = "ampere"  # RTX 30xx / A-series
+    TURING = "turing"  # RTX 20xx / GTX 16xx
+    PASCAL = "pascal"  # GTX 10xx (np. 1070) — bez Tensor cores, słaby FP16
     OLDER = "older"
-    NONE = "none"            # brak CUDA
+    NONE = "none"  # brak CUDA
     UNKNOWN = "unknown"
 
 
-class ComputeTier(str, Enum):
+class ComputeTier(StrEnum):
     A = "A"  # wszystko lokalnie (mocny, nowoczesny GPU)
     B = "B"  # transkrypcja lokalnie; LLM/VLM domyślnie chmura (lub mały model lokalny)
     C = "C"  # wszystko w chmurze (brak/za słaby GPU)
@@ -44,11 +44,11 @@ class ComputeProfile:
     vram_gb: float
     arch: GPUArch
     tier: ComputeTier
-    transcription_local: bool   # transkrypcja na GPU lokalnie (whisper.cpp radzi sobie i na Pascalu)
-    whisper_model: str          # podpowiedź rozmiaru modelu Whisper
-    llm_local: bool             # czy streszczenia LLM lokalnie
+    transcription_local: bool  # transkrypcja na GPU lokalnie (whisper.cpp radzi też na Pascalu)
+    whisper_model: str  # podpowiedź rozmiaru modelu Whisper
+    llm_local: bool  # czy streszczenia LLM lokalnie
     llm_model_hint: str | None  # sugerowany model lokalny (None = chmura)
-    vlm_local: bool             # czy opis slajdów VLM lokalnie
+    vlm_local: bool  # czy opis slajdów VLM lokalnie
     note: str
 
 
@@ -57,9 +57,15 @@ def classify(has_cuda: bool, vram_gb: float, arch: GPUArch = GPUArch.UNKNOWN) ->
     # Tier C — brak CUDA albo za mało VRAM nawet na sensowną transkrypcję.
     if not has_cuda or vram_gb < 4:
         return ComputeProfile(
-            has_cuda, vram_gb, arch, ComputeTier.C,
-            transcription_local=False, whisper_model="cloud",
-            llm_local=False, llm_model_hint=None, vlm_local=False,
+            has_cuda,
+            vram_gb,
+            arch,
+            ComputeTier.C,
+            transcription_local=False,
+            whisper_model="cloud",
+            llm_local=False,
+            llm_model_hint=None,
+            vlm_local=False,
             note="Brak wystarczającego GPU — całość przez chmurę (LiteLLM).",
         )
 
@@ -68,9 +74,14 @@ def classify(has_cuda: bool, vram_gb: float, arch: GPUArch = GPUArch.UNKNOWN) ->
     # Tier A — nowoczesny GPU z dużym VRAM: wszystko lokalnie.
     if modern_big:
         return ComputeProfile(
-            has_cuda, vram_gb, arch, ComputeTier.A,
-            transcription_local=True, whisper_model="large-v3",
-            llm_local=True, llm_model_hint="qwen2.5:14b lub devstral:24b",
+            has_cuda,
+            vram_gb,
+            arch,
+            ComputeTier.A,
+            transcription_local=True,
+            whisper_model="large-v3",
+            llm_local=True,
+            llm_model_hint="qwen2.5:14b lub devstral:24b",
             vlm_local=True,
             note="Mocny GPU — transkrypcja, LLM i VLM lokalnie.",
         )
@@ -79,9 +90,14 @@ def classify(has_cuda: bool, vram_gb: float, arch: GPUArch = GPUArch.UNKNOWN) ->
     whisper_model = "medium" if vram_gb >= 8 else "small"
     small_local_llm = vram_gb >= 8  # 7-8B w Q4 się zmieści, ale na Pascalu będzie wolno
     return ComputeProfile(
-        has_cuda, vram_gb, arch, ComputeTier.B,
-        transcription_local=True, whisper_model=whisper_model,
-        llm_local=small_local_llm, llm_model_hint="qwen2.5:7b" if small_local_llm else None,
+        has_cuda,
+        vram_gb,
+        arch,
+        ComputeTier.B,
+        transcription_local=True,
+        whisper_model=whisper_model,
+        llm_local=small_local_llm,
+        llm_model_hint="qwen2.5:7b" if small_local_llm else None,
         vlm_local=False,
         note=(
             "Słabszy/starszy GPU — transkrypcja lokalnie (mniejszy model Whisper). "
