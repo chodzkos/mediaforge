@@ -12,23 +12,23 @@ Przełącznik "tylko lokalnie" (per kategoria/materiał) może zablokować wysy�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 
-class Provider(str, Enum):
-    LOCAL = "local"        # przez LiteLLM do Ollama (Devstral/Qwen)
+class Provider(StrEnum):
+    LOCAL = "local"  # przez LiteLLM do Ollama (Devstral/Qwen)
     ANTHROPIC = "anthropic"  # Claude
-    OPENAI = "openai"        # ChatGPT
-    GEMINI = "gemini"        # Google
+    OPENAI = "openai"  # ChatGPT
+    GEMINI = "gemini"  # Google
     DEEPSEEK = "deepseek"
 
 
-class Task(str, Enum):
-    NAMING = "naming"            # nazwa pliku — tani model wystarczy
-    SUMMARY = "summary"          # streszczenie / notatka edukacyjna
+class Task(StrEnum):
+    NAMING = "naming"  # nazwa pliku — tani model wystarczy
+    SUMMARY = "summary"  # streszczenie / notatka edukacyjna
     LONG_CONTEXT = "long_context"  # bardzo długie transkrypty — duże okno
-    SLIDES_VLM = "slides_vlm"    # opis slajdów — WYMAGA vision
-    RAG = "rag"                  # pytania do biblioteki
+    SLIDES_VLM = "slides_vlm"  # opis slajdów — WYMAGA vision
+    RAG = "rag"  # pytania do biblioteki
     TRANSCRIBE_CLOUD = "transcribe_cloud"  # fallback transkrypcji
 
 
@@ -54,7 +54,5 @@ class ProviderRegistry:
         warnings: list[str] = []
         vlm = self.assignments.get(Task.SLIDES_VLM)
         if vlm is not None and not vlm.supports_vision:
-            warnings.append(
-                f"Zadanie SLIDES_VLM wymaga modelu z vision, a wybrano {vlm.model}."
-            )
+            warnings.append(f"Zadanie SLIDES_VLM wymaga modelu z vision, a wybrano {vlm.model}.")
         return warnings
