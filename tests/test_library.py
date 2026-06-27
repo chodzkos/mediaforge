@@ -12,7 +12,6 @@ _EXPECTED_TABLES = {
     "transcripts",
     "summaries",
     "tags",
-    "settings",
     "source_profiles",
 }
 
