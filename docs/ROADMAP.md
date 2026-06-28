@@ -13,7 +13,7 @@ Szkielet pakietu (`core`/`gui`/`cli`), `pyproject` + uv, ruff/mypy/pytest, CI (W
 
 **Akceptacja:** `uv run mediaforge` otwiera okno z motywem i pustą biblioteką; CLI `--help` działa; pusta kolejka zadań przechodzi smoke-test; CI zielone.
 
-## ☐ S1 — Nagrywanie ekranu i audio (rdzeń produktu)
+## ☑ S1 — Nagrywanie ekranu i audio (rdzeń produktu)
 **Gałąź:** `feat/s1-recorder`
 
 `RecorderEngine`: cały ekran / wybrane okno / region; wybór monitora; FPS i rozdzielczość; **NVENC** (HEVC/AV1); audio: **WASAPI loopback** (dźwięk systemowy) i/lub mikrofon, miks. Presety jakości (Ekonomiczny/Standard/Wysoka/Archiwum/Tylko audio). Pauza/wznowienie. **Crash-safe** zapis długich sesji + segmentacja. Licznik czasu, szacowany rozmiar.
