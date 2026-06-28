@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import platform
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
+import platformdirs
 from chodzkos_gui_kit.config import Config
 
 from mediaforge.core.ai.providers import ModelSpec, Provider, Task
@@ -48,6 +50,27 @@ def load(on_dirty: Callable[[], None] | None = None) -> Config:
 def machine_fingerprint() -> str:
     """Stabilny identyfikator maszyny (do profilu obliczeniowego per komputer)."""
     return f"{platform.node()}/{platform.machine()}".lower()
+
+
+# ── Ścieżki aplikacji (platformdirs) ──────────────────────────────────────────
+
+
+def data_dir() -> Path:
+    """Katalog danych aplikacji (baza biblioteki, cache). Tworzony przy pierwszym użyciu."""
+    path = Path(platformdirs.user_data_dir(APP_NAME))
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def library_db_path() -> Path:
+    """Ścieżka pliku bazy biblioteki (``library.sqlite3``)."""
+    return data_dir() / "library.sqlite3"
+
+
+def default_recordings_dir() -> Path:
+    """Domyślny katalog na nagrania (``<wideo użytkownika>/mediaforge``)."""
+    base = Path(platformdirs.user_videos_dir() or platformdirs.user_documents_dir())
+    return base / APP_NAME
 
 
 # ── Motyw (tylko odczyt — zapisuje ThemeManager kitu pod tym samym kluczem) ────

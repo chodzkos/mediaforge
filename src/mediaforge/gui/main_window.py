@@ -31,6 +31,7 @@ from mediaforge import __version__
 from mediaforge.core import config as cfg_mod
 from mediaforge.core.tools import Environment, detect_environment, status_line
 from mediaforge.gui.about import open_about
+from mediaforge.gui.record_dialog import RecordDialog
 
 # Etykiety cyklu motywu (kolejność: auto → jasny → ciemny → auto).
 _THEME_CYCLE: tuple[ThemeSetting, ...] = ("auto", "light", "dark")
@@ -94,6 +95,12 @@ class MainWindow(QMainWindow):
         version.setEnabled(False)
         bar.addWidget(version)
 
+        record = QToolButton()
+        record.setText("● Nagrywaj")
+        record.setToolTip("Nagraj ekran / dźwięk (FFmpeg + NVENC)")
+        record.clicked.connect(self._open_recorder)
+        bar.addWidget(record)
+
         bar.addStretch(1)
 
         self._theme_button = QToolButton()
@@ -109,6 +116,13 @@ class MainWindow(QMainWindow):
         bar.addWidget(about)
 
         return bar
+
+    # ── Nagrywanie ──────────────────────────────────────────────────────────--
+
+    def _open_recorder(self) -> None:
+        """Otwiera dialog nagrywania ekranu/audio (S1)."""
+        dialog = RecordDialog(self)
+        dialog.exec()
 
     # ── Motyw ───────────────────────────────────────────────────────────────--
 

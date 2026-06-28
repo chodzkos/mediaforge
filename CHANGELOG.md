@@ -10,6 +10,12 @@ projekt stosuje [Semantic Versioning](https://semver.org/lang/pl/).
 - Usunięto nieużywaną tabelę `settings` ze schematu SQLite (martwy kod z S0) — preferencje skalarne trzyma `config.json` (`core/config.py`), zgodnie z poprawionym ARCHITECTURE/PROMPTS. Schemat v1 edytowany w miejscu (nic nie shipnęło → bez migracji v1→v2).
 
 ### Added
+- **S1 — Nagrywanie ekranu i audio (rdzeń produktu).** `RecorderEngine` (Protocol `AcquisitionEngine`) + `RecorderSession`.
+  - **`core/engines/ffmpeg_cmd.py`** — czysta (testowalna) budowa komend FFmpeg: źródła cały pulpit / monitor (region DPI-aware) / okno / region; wybór enkodera **NVENC (HEVC/AV1) z fallbackiem programowym** (`select_video_encoder` schodzi łańcuchem do dostępnego enkodera z buildu); audio przez `dshow` — dźwięk systemowy (WASAPI loopback) i/lub mikrofon, miks (`amix`); tryb tylko-audio; **presety** Ekonomiczny/Standard/Wysoka/Archiwum/Tylko audio; estymacja rozmiaru.
+  - **`core/engines/segments.py`** — **crash-safe** segmentacja (`-f segment`) + odzysk: sklejenie ważnych segmentów demuxerem `concat` (kopia strumieni); puste/przerwane segmenty pomijane — częściowe nagranie pozostaje odzyskiwalne.
+  - **`core/engines/recorder.py`** — maszyna stanów start → pauza ⇄ wznowienie → stop (ciągła numeracja segmentów), FFmpeg jako **subprocess** (wstrzykiwalny, więc testowalny bez FFmpeg), licznik czasu i szacowany rozmiar; po zakończeniu folder materiału + wpis w bibliotece (status `recorded`).
+  - **`core/library/recordings.py`** — `RecordingStore` (CRUD tabeli `recordings`, statusy).
+  - **`gui/record_dialog.py`** — dialog nagrywania na widgetach kitu (`PathEntry` na katalog, `LogView` ze statusami przez `level_colors`, np. `recording`); wybór monitora DPI-aware (`QScreen × devicePixelRatio`), presety/audio, timer i szacowany rozmiar przez `QTimer`, Start/Pauza/Stop; wpięty przyciskiem „● Nagrywaj" w górnym pasku.
 - **S0 — Fundament.** Szkielet pakietu `core`/`gui`/`cli` z pełnym gate (ruff + mypy --strict + pytest), CI Windows.
   - **`core/config.py`** — cienka warstwa nad `Config` z chodzkos-gui-kit (platformdirs + atomowy zapis); typowane akcesory: motyw (odczyt), ostatnie katalogi, geometria okna, profil obliczeniowy per maszyna (nadpisanie tieru wg fingerprintu), rejestr dostawców per zadanie. Debounce realizuje GUI (`on_dirty` → `QTimer` → `flush()`).
   - **`core/secrets.py`** — keyring z ujednoliconym nazewnictwem kluczy per dostawca (`api_key:<provider>`) + token HF/Telegram.
