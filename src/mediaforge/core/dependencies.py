@@ -254,6 +254,34 @@ def check_providers() -> dict[str, bool]:
     return {p: api_key_present("mediaforge", f"api_key_{p}") for p in providers}
 
 
+def check_ytdlp() -> dict[str, Any]:
+    """yt-dlp: dostępność (pakiet Python lub binarka w PATH) + wersja. Sonda mediaforge (S5)."""
+    result: dict[str, Any] = {"available": False, "version": ""}
+    try:
+        import yt_dlp
+
+        result["available"] = True
+        result["version"] = str(getattr(yt_dlp.version, "__version__", "") or "")
+    except Exception:
+        if command_in_path("yt-dlp"):
+            result["available"] = True
+            out = _run(["yt-dlp", "--version"])
+            result["version"] = out.splitlines()[0].strip() if out.strip() else ""
+    return result
+
+
+def whisper_cuda_ok() -> bool:
+    """PLACEHOLDER — w S3 zastąpione REALNĄ sondą whisper.cpp CUDA.
+
+    Docelowo (S3): wywołanie binarki whisper.cpp z testem backendu / próbny krótki przebieg,
+    z WŁASNYM progiem architektury — NIE sm_75/cu130 (to próg torcha pdf2md; ggml schodzi
+    niżej, prawdopodobnie do Pascala, więc GTX 1070 może działać). Do czasu S3 decyzję o tierze
+    podejmuje heurystyka arch+VRAM w compute.classify; tu zwracamy zgrubne: GPU obecny
+    i binarka whisper.cpp w PATH.
+    """
+    return bool(check_gpu()["available"]) and bool(check_whispercpp()["available"])
+
+
 # ───────────────────────── Agregat danych (źródło dla CLI i GUI) ─────────────────────────
 
 
@@ -267,6 +295,7 @@ def check_all() -> dict[str, Any]:
         vram_gb=float(gpu_raw["vram_gb"]),
         arch=arch,
     )
+    wh = check_whispercpp()
     return {
         "system": {
             "os": platform.system(),
@@ -274,11 +303,14 @@ def check_all() -> dict[str, Any]:
             "python": platform.python_version(),
         },
         "ffmpeg": check_ffmpeg(),
-        "whispercpp": check_whispercpp(),
+        "whispercpp": wh,
+        "ytdlp": check_ytdlp(),
         "gpu": {**gpu_raw, "arch": arch.value},  # wzbogacenie o arch dla wyświetlania
         "compute": {
             "tier": profile.tier.value,
             "transcription_local": profile.transcription_local,
+            # PLACEHOLDER do S3 — realna sonda whisper.cpp CUDA (własny próg) zastąpi tę heurystykę:
+            "whisper_cuda_ok": bool(gpu_raw["available"]) and wh["available"],
             "llm_local": profile.llm_local,
             "vlm_local": profile.vlm_local,
             "note": profile.note,
@@ -323,6 +355,11 @@ def render_report(report: dict[str, Any]) -> str:
     lines.append(f"whisper.cpp: {_mark(wh.get('available', False))} {wh.get('path', '')}".rstrip())
     if not wh.get("available", False):
         lines.append(f"             → {_HINTS['whispercpp']}")
+
+    yt = report.get("ytdlp", {})
+    lines.append(
+        f"yt-dlp:      {_mark(yt.get('available', False))} {yt.get('version', '')}".rstrip()
+    )
 
     gpu = report.get("gpu", {})
     comp = report.get("compute", {})
