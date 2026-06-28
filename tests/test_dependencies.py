@@ -66,3 +66,13 @@ def test_render_report_is_text_and_decoupled() -> None:
     text = dep.render_report(dep.check_all())
     assert isinstance(text, str)
     assert "System:" in text and "Tier" in text
+
+
+def test_ytdlp_and_whisper_placeholder_present() -> None:
+    report = dep.check_all()
+    assert "ytdlp" in report
+    assert isinstance(report["ytdlp"]["available"], bool)
+    # placeholder whisper_cuda_ok jest w sekcji compute (zastąpiony realną sondą w S3)
+    assert "whisper_cuda_ok" in report["compute"]
+    assert isinstance(report["compute"]["whisper_cuda_ok"], bool)
+    assert isinstance(dep.whisper_cuda_ok(), bool)
