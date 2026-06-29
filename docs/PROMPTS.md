@@ -38,6 +38,48 @@ Zbuduj fundament pakietu mediaforge:
 Definicja ukończenia: ruff + mypy --strict + pytest zielone; CI przechodzi.
 ```
 
+## Doctor — diagnostyka środowiska (przyrost po S0)
+
+```
+Gałąź feat/doctor. UWAGA: S0 jest już zrobione — nie przebudowuj go.
+
+Pakiet core/detection/ JEST w repo (hardware.py + tools.py + report.py; wzorzec z pdf2md,
+Qt-free, checki odporne, detection.check_all()). Jest też test_detection.py. Struktura lustruje
+pdf2md pod przyszłe `git mv detection/ → chodzkos-detection`. Twoje zadanie to WPIĘCIE i konsolidacja:
+
+1. CLI: dodaj komendę `doctor` do istniejącego cli/main.py (NIE nadpisuj reszty CLI z S0).
+   Override (whisper.cpp, LiteLLM) czytaj z core/config i PODAJ do check_all — detection/ jest
+   celowo odsprzężone od configu:
+
+       @app.command()
+       def doctor(as_json: bool = typer.Option(False, "--json")) -> None:
+           "Sprawdź dostępność narzędzi i zasobów (ffmpeg, whisper.cpp, GPU, LiteLLM)."
+           from mediaforge.core import config, detection
+           cfg = config.load()
+           report = detection.check_all(
+               whispercpp_path=cfg.get("whispercpp_path"),
+               litellm_base_url=cfg.get("litellm_base_url"),
+           )
+           if as_json:
+               import json
+               typer.echo(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+           else:
+               typer.echo(detection.render_report(report))
+
+   (render_report JEST w report.py — prezentacja oddzielona od sond; GUI używa check_all() wprost.
+   default=str w json bo path to obiekt Path.)
+2. Status bar GUI: jeśli S0 dodał JAKĄKOLWIEK doraźną detekcję narzędzi/tieru, ZASTĄP ją
+   odczytem z detection.check_all() — jedno źródło prawdy, bez dwóch ścieżek wykrywania.
+3. Klucze configu: `whispercpp_path` (binarka whisper.cpp poza PATH — override) i `litellm_base_url`.
+   Dodaj typowane akcesory w core/config; sonda używa override → fallback shutil.which.
+4. Nie dubluj detekcji GPU przez torch — zostaje nvidia-smi; sonda torcha to dodatek (już tak jest).
+   Nowe narzędzia sonduj przez tools.probe_tool (kontrakt {available, version, path}), nie goły which.
+
+Definicja ukończenia: `mediaforge-cli doctor` zwraca raport bez crasha gdy narzędzi brak;
+wykryty GPU mapuje się na poprawny tier; override whisper.cpp znajduje binarkę poza PATH;
+status bar pokazuje to samo co doctor; testy zielone.
+```
+
 ## S1 — Nagrywanie ekranu i audio
 
 ```

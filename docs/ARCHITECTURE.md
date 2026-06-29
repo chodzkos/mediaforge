@@ -21,7 +21,10 @@ src/mediaforge/
 │   ├── jobs/                # kolejka: ThreadPoolExecutor (std-lib) + tabela jobs (Qt-free; bez Celery/Redis)
 │   ├── config.py            # cienka warstwa nad Config z gui-kit (platformdirs + atomowy zapis)
 │   ├── secrets.py           # keyring (sekrety — poza zakresem gui-kit)
-│   ├── dependencies.py      # doctor: detekcja narzędzi/GPU (nvidia-smi, bez torcha) → zasila compute + status bar
+│   ├── detection/           # doctor: GPU (nvidia-smi, bez torcha) + narzędzia + raport; gotowe do wydzielenia
+│   │   ├── hardware.py       #   surowe GPU [→pkg] + most arch (mediaforge)
+│   │   ├── tools.py          #   probe_tool [→pkg] + ffmpeg/whisper(override)/yt-dlp (mediaforge)
+│   │   └── report.py         #   check_all (agregat) + render_report (app-side)
 │   └── naming.py            # szablony nazw + nazwa z AI
 ├── gui/             # PySide6 — wpina chodzkos-gui-kit (ThemeManager, dialogi, widgety)
 └── cli/             # Typer (te same operacje co GUI, headless)
@@ -170,7 +173,9 @@ Wszystkie aplikacje (chodzkos) stoją na wspólnym kicie. mediaforge **konsumuje
 
 ## Diagnostyka środowiska (doctor)
 
-`core/dependencies.py` — wzorzec przeniesiony z pdf2md (funkcje odporne na brak narzędzia: zwracają False/pusty dict, nigdy nie rzucają; `check_all()` jako agregat). Qt-free. Sprawdza: system, ffmpeg (+ które enkodery: `h264_nvenc`/`hevc_nvenc`/`av1_nvenc`/`libx264`), whisper.cpp (binarka), GPU, gateway LiteLLM (endpoint z configu), klucze dostawców w keyring (**same booleany, nigdy wartości**).
+`core/detection/` — pakiet wzorowany na pdf2md (funkcje odporne na brak narzędzia: zwracają False/pusty dict, nigdy nie rzucają), z podziałem: `hardware.py` (GPU), `tools.py` (narzędzia), `report.py` (agregat + render). Qt-free. Sprawdza: system, ffmpeg (+ enkodery `h264_nvenc`/`hevc_nvenc`/`av1_nvenc`/`libx264` jako warstwa mediaforge OBOK generycznego `probe_tool`), whisper.cpp, yt-dlp, GPU, gateway LiteLLM (endpoint z configu), klucze dostawców w keyring (**same booleany, nigdy wartości**).
+
+**Kontrakt `probe_tool` = nadzbiór pakietu.** Pakietowy `chodzkos-detection.probe_tool` (v0.1.1) zwraca `{available, version}`; nasz lokalny `probe_tool` dodaje `path` (Path | None) — te same nazwy pól + rozszerzenie. Gdy pakiet dostanie wzbogacony `probe_tool` (`_make_tool` z EpubForge: path + fallback na katalogi instalacji), podmieniamy ciało na import z pakietu, reszta sond bez zmian. **whisper.cpp: override `whispercpp_path` z configu** → fallback `shutil.which` (binarka bywa self-compiled poza PATH, np. `build/bin/`); override przeżyje migrację na wzbogacony pakiet. To czyni mediaforge **drugim konsumentem** wzbogaconej sondy (obok EpubForge) — wyzwalacz upstreamu `_make_tool` tym bliższy.
 
 **Detekcja GPU bez torcha** — kluczowa różnica względem pdf2md. Domyślne ścieżki mediaforge (whisper.cpp, NVENC) są torch-free, więc doctor używa `nvidia-smi`, a sonda torcha (`torch.zeros(1).cuda()`) to wyłącznie dodatek odpalany tylko, gdy torch jest zainstalowany (tor HF). Sonda nvidia-smi jest odporna jak reszta: gate `command_in_path` (brak sterowników/inny GPU → puste), sprawdzenie `returncode` (sterownik w złym stanie → puste), brak parsowania stderr. **compute_cap pobierane osobnym zapytaniem** (starsze sterowniki mogą nie mieć tego pola), a gdy nie przyjdzie lub zwróci `[Not Supported]` → **arch mapowany z nazwy GPU** (`arch_from_name`: RTX 5090→Blackwell, GTX 1070→Pascal). Dzięki temu `classify()` dostaje arch niezależnie od wersji nvidia-smi.
 

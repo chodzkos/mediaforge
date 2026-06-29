@@ -48,3 +48,8 @@ htmlcov/
 .idea/
 Thumbs.db
 desktop.ini
+# Windows „Mark of the Web" (alternatywne strumienie danych przy kopiowaniu z sieci)
+*:Zone.Identifier
+
+# Archiwa dostawcze (paczki z plikami wrzucane lokalnie — nie commitujemy)
+*.tar.gz
