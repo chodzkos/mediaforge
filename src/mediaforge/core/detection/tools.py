@@ -95,7 +95,9 @@ def check_ffmpeg() -> dict[str, Any]:
     return {**tool, "encoders": encoders}
 
 
-def check_whispercpp(override_path: str | None = None, binary: str = "whisper-cli") -> dict[str, Any]:
+def check_whispercpp(
+    override_path: str | None = None, binary: str = "whisper-cli"
+) -> dict[str, Any]:
     """whisper.cpp: override z configu (`whispercpp_path`) → fallback `shutil.which`.
 
     Override zaprojektowany OD RAZU: binarka bywa self-compiled poza PATH (np. build/bin/).
@@ -109,7 +111,8 @@ def check_whispercpp(override_path: str | None = None, binary: str = "whisper-cl
     for cand in (binary, "whisper-cpp", "whisper", "main"):
         found = shutil.which(cand)
         if found:
-            return {"available": True, "version": _whisper_version(Path(found)), "path": Path(found)}
+            p = Path(found)
+            return {"available": True, "version": _whisper_version(p), "path": p}
     return {"available": False, "version": "", "path": None}
 
 
@@ -119,7 +122,7 @@ def _whisper_version(path: Path) -> str:
 
 
 def check_ytdlp() -> dict[str, Any]:
-    """yt-dlp: pakiet Python (preferowane) lub binarka w PATH. Kontrakt {available, version, path}."""
+    """yt-dlp: pakiet Python lub binarka w PATH. Kontrakt {available, version, path}."""
     try:
         import yt_dlp
 

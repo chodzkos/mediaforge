@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from mediaforge.core import config as cfg_mod
-from mediaforge.core.dependencies import check_ffmpeg
+from mediaforge.core.detection import check_ffmpeg
 from mediaforge.core.engines.ffmpeg_cmd import (
     PRESETS,
     AudioConfig,

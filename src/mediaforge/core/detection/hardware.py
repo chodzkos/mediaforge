@@ -11,6 +11,7 @@ brak narzędzia (puste/UNKNOWN, nigdy nie rzuca).
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import re
 import shutil
@@ -84,20 +85,16 @@ def check_gpu() -> dict[str, Any]:
         if len(parts) >= 3:
             result["available"] = True
             result["name"] = parts[0]
-            try:
+            with contextlib.suppress(ValueError):
                 result["vram_gb"] = round(float(parts[1]) / 1024, 1)
-            except ValueError:
-                pass
             result["driver"] = parts[2]
             cc = _nvidia_smi("compute_cap")  # osobne zapytanie — starsze sterowniki nie mają pola
             cc_line = cc.splitlines()[0].strip() if cc.strip() else ""
             if cc_line and not cc_line.startswith("["):  # odfiltruj [Not Supported]/[N/A]
                 result["compute_cap"] = cc_line
-    try:
+    with contextlib.suppress(Exception):
         if importlib.util.find_spec("torch") is not None:
             result["torch_cuda_usable"] = _torch_cuda_usable()
-    except Exception:
-        pass
     return result
 
 

@@ -9,7 +9,8 @@ from mediaforge.core.detection import hardware, report, tools
 
 def test_check_all_is_resilient() -> None:
     rep = detection.check_all()
-    for key in ("system", "ffmpeg", "whispercpp", "ytdlp", "gpu", "compute", "litellm", "providers"):
+    keys = ("system", "ffmpeg", "whispercpp", "ytdlp", "gpu", "compute", "litellm", "providers")
+    for key in keys:
         assert key in rep
     assert isinstance(rep["ffmpeg"]["available"], bool)
     assert isinstance(rep["ffmpeg"]["encoders"], dict)  # warstwa mediaforge obok probe_tool
