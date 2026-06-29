@@ -1,6 +1,9 @@
 """Testy warstwy detekcji: kontrakt probe_tool, override whisper.cpp, arch, raport."""
 
+import shutil
 from pathlib import Path
+
+import pytest
 
 from mediaforge.core import detection
 from mediaforge.core.compute import GPUArch
@@ -9,7 +12,8 @@ from mediaforge.core.detection import hardware, report, tools
 
 def test_check_all_is_resilient() -> None:
     rep = detection.check_all()
-    for key in ("system", "ffmpeg", "whispercpp", "ytdlp", "gpu", "compute", "litellm", "providers"):
+    keys = ("system", "ffmpeg", "whispercpp", "ytdlp", "gpu", "compute", "litellm", "providers")
+    for key in keys:
         assert key in rep
     assert isinstance(rep["ffmpeg"]["available"], bool)
     assert isinstance(rep["ffmpeg"]["encoders"], dict)  # warstwa mediaforge obok probe_tool
@@ -30,14 +34,17 @@ def test_probe_tool_contract_has_path() -> None:
         assert isinstance(ff["path"], Path)
 
 
-def test_whispercpp_override_used_first() -> None:
-    # Override istniejącej ścieżki → available + path (gałąź override, bez PATH).
+def test_whispercpp_override_used_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Brak whisper.cpp w PATH — fallback deterministyczny niezależnie od środowiska CI
+    # (kandydat "main" bywa obecny na PATH np. na runnerach Windows → mockujemy which).
+    monkeypatch.setattr(shutil, "which", lambda _cmd: None)
+    # Override istniejącej ścieżki → available + path (gałąź override, omija PATH).
     existing = __file__  # dowolny istniejący plik
     wh = tools.check_whispercpp(override_path=existing)
     assert wh["available"] is True
     assert wh["path"] == Path(existing)
     assert set(wh) >= {"available", "version", "path"}
-    # Nieistniejąca ścieżka override → fallback do which (tu brak → niedostępne).
+    # Nieistniejąca ścieżka override → fallback do which (zamockowany brak → niedostępne).
     wh2 = tools.check_whispercpp(override_path="/no/such/whispercpp/binary")
     assert wh2["available"] is False
 

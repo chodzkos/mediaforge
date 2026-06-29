@@ -25,7 +25,8 @@ def whisper_cuda_ok(whispercpp_path: str | None = None) -> bool:
     więc GTX 1070 może działać). Do S3 decyzję o tierze podejmuje heurystyka arch+VRAM w
     compute.classify; tu zgrubne: GPU obecny i binarka whisper.cpp znaleziona (override/PATH).
     """
-    return hardware.check_gpu()["available"] and tools.check_whispercpp(whispercpp_path)["available"]
+    gpu_ok = bool(hardware.check_gpu()["available"])
+    return gpu_ok and bool(tools.check_whispercpp(whispercpp_path)["available"])
 
 
 def check_all(
@@ -58,7 +59,8 @@ def check_all(
         "compute": {
             "tier": profile.tier.value,
             "transcription_local": profile.transcription_local,
-            # PLACEHOLDER do S3 — realna sonda whisper.cpp CUDA z własnym progiem zastąpi tę heurystykę:
+            # PLACEHOLDER (S3): zastąpione realną sondą whisper.cpp CUDA
+            # z własnym progiem (nie sm_75/cu130):
             "whisper_cuda_ok": bool(gpu_raw["available"]) and wh["available"],
             "llm_local": profile.llm_local,
             "vlm_local": profile.vlm_local,
@@ -73,7 +75,7 @@ def check_all(
 
 _HINTS: dict[str, str] = {
     "ffmpeg": "zainstaluj ffmpeg i dodaj do PATH",
-    "whispercpp": "zbuduj whisper.cpp (CUDA) i ustaw whispercpp_path w konfiguracji (binarka bywa poza PATH)",
+    "whispercpp": "zbuduj whisper.cpp (CUDA) i ustaw whispercpp_path w configu (bywa poza PATH)",
     "gpu": "brak GPU CUDA — transkrypcja/LLM pójdą w chmurę (LiteLLM)",
     "litellm": "uruchom gateway LiteLLM albo ustaw endpoint w konfiguracji",
 }
@@ -93,7 +95,8 @@ def render_report(report: dict[str, Any]) -> str:
     ff = report.get("ffmpeg", {})
     enc = ff.get("encoders", {})
     enc_str = ", ".join(f"{n} {_mark(v)}" for n, v in enc.items()) if enc else "-"
-    lines.append(f"FFmpeg:      {_mark(ff.get('available', False))} {ff.get('version', '')}".rstrip())
+    ff_av = _mark(ff.get("available", False))
+    lines.append(f"FFmpeg:      {ff_av} {ff.get('version', '')}".rstrip())
     lines.append(f"             enkodery: {enc_str}")
     if not ff.get("available", False):
         lines.append(f"             → {_HINTS['ffmpeg']}")
@@ -105,7 +108,8 @@ def render_report(report: dict[str, Any]) -> str:
         lines.append(f"             → {_HINTS['whispercpp']}")
 
     yt = report.get("ytdlp", {})
-    lines.append(f"yt-dlp:      {_mark(yt.get('available', False))} {yt.get('version', '')}".rstrip())
+    yt_av = _mark(yt.get("available", False))
+    lines.append(f"yt-dlp:      {yt_av} {yt.get('version', '')}".rstrip())
 
     gpu = report.get("gpu", {})
     comp = report.get("compute", {})
