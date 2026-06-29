@@ -26,7 +26,8 @@ def whisper_cuda_ok(whispercpp_path: str | None = None) -> bool:
     compute.classify; tu zgrubne: GPU obecny i binarka whisper.cpp znaleziona (override/PATH).
     """
     gpu_ok = bool(hardware.check_gpu()["available"])
-    return gpu_ok and bool(tools.check_whispercpp(whispercpp_path)["available"])
+    whisper_ok = bool(tools.check_whispercpp(whispercpp_path)["available"])
+    return gpu_ok and whisper_ok
 
 
 def check_all(

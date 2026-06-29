@@ -105,12 +105,18 @@ def check_whispercpp(
     Override zaprojektowany OD RAZU: binarka bywa self-compiled poza PATH (np. build/bin/).
     Override przeżyje przyszłą migrację na wzbogacony `probe_tool` pakietu (jak override
     java/epubcheck w EpubForge żyje obok detekcji). Kontrakt: {available, version, path}.
+    Fallback PATH celowo wąski (whisper-cli/whisper-cpp) — nazwy generyczne (main/whisper) dają
+    false-positive; dla nietypowych lokalizacji służy override, nie zgadywanie nazw.
     """
     if override_path:
         p = Path(override_path)
         if p.exists():
             return {"available": True, "version": _whisper_version(p), "path": p}
-    for cand in (binary, "whisper-cpp", "whisper", "main"):
+    # Fallback PATH — TYLKO nazwy specyficzne dla whisper.cpp. CELOWO bez "whisper" (koliduje
+    # z CLI openai-whisper — inne narzędzie) i bez "main" (zbyt generyczne: trafia przypadkowy
+    # main/main.exe na PATH → false-positive; to wywróciło CI). Stary build z binarką "main"
+    # albo binarka poza PATH → użyj override whispercpp_path.
+    for cand in (binary, "whisper-cpp"):
         found = shutil.which(cand)
         if found:
             p = Path(found)
