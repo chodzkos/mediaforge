@@ -1,5 +1,6 @@
 """Testy warstwy detekcji: kontrakt probe_tool, override whisper.cpp, arch, raport."""
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -36,7 +37,7 @@ def test_probe_tool_contract_has_path() -> None:
 def test_whispercpp_override_used_first(monkeypatch: pytest.MonkeyPatch) -> None:
     # Brak whisper.cpp w PATH — fallback deterministyczny niezależnie od środowiska CI
     # (kandydat "main" bywa obecny na PATH np. na runnerach Windows → mockujemy which).
-    monkeypatch.setattr(tools.shutil, "which", lambda _cmd: None)
+    monkeypatch.setattr(shutil, "which", lambda _cmd: None)
     # Override istniejącej ścieżki → available + path (gałąź override, omija PATH).
     existing = __file__  # dowolny istniejący plik
     wh = tools.check_whispercpp(override_path=existing)
