@@ -35,16 +35,17 @@ def test_probe_tool_contract_has_path() -> None:
 
 
 def test_whispercpp_override_used_first(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Brak whisper.cpp w PATH — fallback deterministyczny niezależnie od środowiska CI
-    # (kandydat "main" bywa obecny na PATH np. na runnerach Windows → mockujemy which).
-    monkeypatch.setattr(shutil, "which", lambda _cmd: None)
-    # Override istniejącej ścieżki → available + path (gałąź override, omija PATH).
+    # Override istniejącej ścieżki → available + path (gałąź override, bez PATH).
     existing = __file__  # dowolny istniejący plik
     wh = tools.check_whispercpp(override_path=existing)
     assert wh["available"] is True
     assert wh["path"] == Path(existing)
     assert set(wh) >= {"available", "version", "path"}
-    # Nieistniejąca ścieżka override → fallback do which (zamockowany brak → niedostępne).
+    # Hermetycznie: brak czegokolwiek w PATH → fallback deterministyczny niezależnie od OS/CI
+    # (na Windows generyczne nazwy mogłyby się rozwiązać do przypadkowej binarki).
+    # Patchujemy współdzielony moduł shutil (tools.py używa tego samego obiektu) — bez
+    # sięgania po nie-eksportowany tools.shutil (no_implicit_reexport pod mypy --strict).
+    monkeypatch.setattr(shutil, "which", lambda _cmd: None)
     wh2 = tools.check_whispercpp(override_path="/no/such/whispercpp/binary")
     assert wh2["available"] is False
 
