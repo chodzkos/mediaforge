@@ -26,6 +26,7 @@ _TIMEOUT = 5
 
 # ───────────── Część generyczna (→ chodzkos-detection): surowe fakty GPU ─────────────
 
+
 def _nvidia_smi(query: str) -> str:
     """Best-effort zapytanie nvidia-smi → surowy stdout (lub ""). Odporne na wszystko.
 
@@ -99,6 +100,7 @@ def check_gpu() -> dict[str, Any]:
 
 
 # ───────────── Most mediaforge (ZOSTAJE): mapowanie arch + polityka tierów ─────────────
+
 
 def detect_arch(compute_cap: str) -> GPUArch:
     """compute capability → architektura. Preferowane źródło (dokładne)."""

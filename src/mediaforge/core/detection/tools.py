@@ -38,6 +38,7 @@ def _run(cmd: list[str], timeout: int = _TIMEOUT) -> str:
 
 # ───────────── Prymitywy generyczne (→ chodzkos-detection) ─────────────
 
+
 def command_in_path(cmd: str) -> bool:
     """Czy narzędzie wiersza poleceń jest dostępne w PATH."""
     return shutil.which(cmd) is not None
@@ -78,6 +79,7 @@ def probe_tool(
 
 
 # ───────────── Sondy mediaforge (ZOSTAJĄ; zbudowane na prymitywach) ─────────────
+
 
 def _ffmpeg_version(out: str) -> str:
     parts = out.splitlines()[0].split()
