@@ -77,6 +77,30 @@ def test_render_report_text() -> None:
     assert "System:" in text and "Tier" in text and "yt-dlp:" in text
 
 
+def _report_with_whisper(*, model_set: bool, runtime: str) -> dict[str, object]:
+    return {
+        "whispercpp": {"available": True, "path": "/usr/bin/whisper-cli"},
+        "compute": {"whisper_model_set": model_set, "whisper_runtime": runtime, "tier": "A"},
+    }
+
+
+def test_render_whisper_model_not_set() -> None:
+    text = report.render_report(_report_with_whisper(model_set=False, runtime="unknown"))
+    assert "model nieustawiony" in text
+
+
+def test_render_whisper_runtime_cuda() -> None:
+    text = report.render_report(_report_with_whisper(model_set=True, runtime="cuda"))
+    assert "runtime: CUDA" in text
+
+
+def test_check_all_no_probe_keeps_runtime_unknown() -> None:
+    # Bez probe_whisper sonda nie biegnie (status bar nie zamarza) → runtime 'unknown'.
+    rep = detection.check_all(whisper_model="/m/x.bin")
+    assert rep["compute"]["whisper_runtime"] == "unknown"
+    assert rep["compute"]["whisper_cuda_ok"] is False
+
+
 def test_status_line_from_report() -> None:
     # Pasek statusu czyta te same DANE co doctor (check_all) — krótka prezentacja.
     rep = {

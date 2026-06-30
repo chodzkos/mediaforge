@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -65,6 +67,56 @@ def test_queue_processes_pending(tmp_path: Path) -> None:
     assert queue.process_pending() == 2
     assert set(seen) == {a, b}
     assert store.get(a) is not None and store.get(a).status is JobStatus.DONE  # type: ignore[union-attr]
+
+
+def _vram_guard_handler(
+    lock: threading.Lock, active: dict[str, int]
+) -> Callable[[Job, Callable[[float], None]], None]:
+    def handler(job: Job, progress: Callable[[float], None]) -> None:
+        with lock:
+            active["now"] += 1
+            active["max"] = max(active["max"], active["now"])
+        time.sleep(0.02)  # okno na nakładkę, gdyby zadania szły równolegle
+        with lock:
+            active["now"] -= 1
+
+    return handler
+
+
+def test_gpu_lane_serializes_same_type(tmp_path: Path) -> None:
+    """Linia GPU (max_workers=1) serializuje zadania jednego typu — jeden model w VRAM."""
+    store = _store(tmp_path)
+    lock = threading.Lock()
+    active = {"now": 0, "max": 0}
+    queue = JobQueue(store, workers=4, lanes={"gpu": 1}, routes={"transcribe": "gpu"})
+    queue.register("transcribe", _vram_guard_handler(lock, active))
+    for _ in range(4):
+        store.enqueue("transcribe")
+
+    assert queue.process_pending() == 4
+    assert active["max"] == 1
+
+
+def test_gpu_lane_serializes_across_types(tmp_path: Path) -> None:
+    """KLUCZOWE: różne typy GPU na wspólnej linii ``gpu`` też się serializują (VLM vs transkrypcja).
+
+    Tu jest sens współdzielonej linii: transkrypcja i przyszły VLM/LLM nie ładują dwóch modeli
+    do VRAM naraz. Gdyby każdy typ miał własny executor, ten test by padł (max == 2).
+    """
+    store = _store(tmp_path)
+    lock = threading.Lock()
+    active = {"now": 0, "max": 0}
+    handler = _vram_guard_handler(lock, active)
+    queue = JobQueue(store, workers=4, lanes={"gpu": 1}, routes={"transcribe": "gpu", "vlm": "gpu"})
+    queue.register("transcribe", handler)
+    queue.register("vlm", handler)
+    store.enqueue("transcribe")
+    store.enqueue("vlm")
+    store.enqueue("transcribe")
+    store.enqueue("vlm")
+
+    assert queue.process_pending() == 4
+    assert active["max"] == 1  # nigdy dwa modele GPU naraz, NIEZALEŻNIE od typu
 
 
 def test_queue_marks_failure_on_handler_exception(tmp_path: Path) -> None:

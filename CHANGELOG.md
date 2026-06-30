@@ -6,6 +6,16 @@ projekt stosuje [Semantic Versioning](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+### Added
+- **S3 — Transkrypcja na kolejce `jobs` (whisper.cpp, CUDA, torch-free).**
+  - **`core/jobs`** — linie (lanes) w `JobQueue`: transkrypcja na linii GPU `max_workers=1` (jeden model w VRAM naraz), import na osobnej linii I/O; `handlers.py` (transkrypcja/import jako joby, Qt-free, testowalne synchronicznym executorem).
+  - **`core/ai/transcribe.py`** — `WhisperCppBackend` (ffmpeg → 16 kHz mono WAV → whisper-cli), czyste buildery + `parse_whisper_json`; `whisper_backend_from_output` (EMPIRYCZNA detekcja runtime z logu — znosi próg sm_75/cu130). Config: `whisper_model`/`whisper_language`/`whisper_threads`. Tor HF (insanely-fast-whisper) odroczony (Protocol + brak implementacji).
+  - **`doctor`** — `whisper_cuda_ok` przestał być placeholderem: empiryczna sonda (whisper-cli na 0.1 s ciszy, parsowanie runtime, `lru_cache`); bez modelu „whisper.cpp ✓ (model nieustawiony)". Heurystyka arch+VRAM (`compute.classify`) zostaje fallbackiem decyzji o tierze.
+  - **GUI biblioteki** — „Transkrybuj" na materiale (kolejkuje job), badge 📝 dla gotowej transkrypcji, `LogView` ze statusami zadań zasilany **pollingiem `QTimer`** (bez sygnałów z wątków roboczych); transkrypt (.json/.srt) i `transcript_status` zapisywane do `metadata.json` (źródło prawdy) + SQLite, podnoszone przez `rescan`.
+
+### Changed
+- **Import przepięty na kolejkę `jobs` (kind `import`)** — spłata długu synchronicznego importu z S2: kopia+FFmpeg w wątku roboczym, UI się nie blokuje przy dużych plikach; usunięto ścieżkę synchroniczną.
+
 ### Fixed
 - **Samonaprawiająca się migracja schematu (`ensure_schema`).** Baza sprzed S2 nie dostawała nowych kolumn (`recordings` rozszerzono w miejscu, a `migrate()` był no-op przy istniejącym `user_version`) → `list_materials()` żądał `r.folder` → `sqlite3.OperationalError: no such column` → GUI nie wstawało na maszynie ze starą bazą. Teraz `ensure_schema` (wołane w `RecordingStore.__init__` i z `migrate()`) dorabia brakujące kolumny przez `ALTER TABLE ADD COLUMN` — idempotentnie i **nie-destrukcyjnie** (zachowuje dane/indeks; świadomie NIE drop+recreate, bo baza może być na NAS-ie chwilowo offline). Jedno źródło prawdy dla kolumn `recordings` (CREATE i ALTER z tego samego dicta); `user_version` ostemplowany jako zaczep na przyszłe migracje nie-addytywne. **Znana, świadoma decyzja:** wpisy sprzed S2 z `folder=NULL` (utworzone przez stary `create()`) przeżywają migrację, ale są niewidoczne w bibliotece (filtr „prawdziwych materiałów" `folder IS NOT NULL`) — dane zachowane, do ewentualnego backfillu folderu/`metadata.json`; to nie bug.
 

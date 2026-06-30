@@ -42,9 +42,12 @@ def doctor(as_json: bool = typer.Option(False, "--json")) -> None:
     from mediaforge.core import config, detection
 
     cfg = config.load()
+    # doctor odpala empiryczną sondę runtime whisper.cpp (probe_whisper=True; cache).
     report = detection.check_all(
         whispercpp_path=config.get_whispercpp_path(cfg),
         litellm_base_url=config.get_litellm_base_url(cfg),
+        whisper_model=config.get_whisper_model(cfg),
+        probe_whisper=True,
     )
     if as_json:
         import json

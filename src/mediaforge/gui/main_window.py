@@ -168,8 +168,13 @@ class MainWindow(QMainWindow):
         if saved:
             self.restoreGeometry(QByteArray.fromBase64(saved.encode("ascii")))
 
+    def start_jobs(self) -> None:
+        """Uruchamia kolejkę zadań biblioteki (woła entry point po pokazaniu okna)."""
+        self._library.start_jobs()
+
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Zapisuje geometrię okna i domyka config przed zamknięciem."""
+        """Zapisuje geometrię okna, domyka kolejkę i config przed zamknięciem."""
+        self._library.shutdown()  # zatrzymaj polling + wątek roboczy kolejki
         geometry = bytes(self.saveGeometry().toBase64().data()).decode("ascii")
         cfg_mod.set_window_geometry(self._config, geometry)
         self._config.save_now()  # zamknięcie = zapis bezwarunkowy (omija debounce)

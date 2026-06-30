@@ -1,9 +1,10 @@
-"""Dialog importu lokalnych plików A/V — adapter Qt nad :class:`ImporterEngine`.
+"""Dialog importu lokalnych plików A/V — kolejkuje joby importu (nie blokuje UI).
 
 Lista plików to kitowy ``FileList`` (drag&drop + toolbar Dodaj/Usuń/Wyczyść) — bez
 własnej listy. Katalog docelowy biblioteki przez kitowy ``PathEntry``. Metadane wspólne
-(kategoria, tagi) stosowane do wszystkich importowanych; szczegóły edytuje się potem w
-bibliotece. Import jest synchroniczny (kopia + FFmpeg) ze statusem w ``LogView``.
+(kategoria, tagi) stosowane do wszystkich; szczegóły edytuje się potem w bibliotece.
+Import idzie przez kolejkę ``jobs`` (kind ``import``) — kopia+FFmpeg w wątku roboczym,
+więc UI się nie blokuje przy dużych plikach; postęp pokazuje biblioteka (polling).
 """
 
 from __future__ import annotations
@@ -21,9 +22,10 @@ from PySide6.QtWidgets import (
 )
 
 from mediaforge.core import config as cfg_mod
-from mediaforge.core.engines.import_engine import SUPPORTED_EXTS, ImporterEngine
+from mediaforge.core.engines.import_engine import SUPPORTED_EXTS
+from mediaforge.core.jobs import JobStore
+from mediaforge.core.jobs.handlers import JOB_IMPORT
 from mediaforge.core.library.db import Database
-from mediaforge.core.library.recordings import RecordingStore
 
 _FILELIST_TEXTS = FileListTexts(
     files="Pliki",
@@ -42,16 +44,16 @@ _FILELIST_TEXTS = FileListTexts(
 
 
 class ImportDialog(QDialog):
-    """Wybór plików + wspólne metadane → import do biblioteki (folder + metadata.json + SQLite)."""
+    """Wybór plików + wspólne metadane → joby importu w kolejce (kind ``import``)."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Import materiałów")
         self.setMinimumWidth(560)
-        self.imported_count = 0
+        self.enqueued_count = 0
 
         Database(cfg_mod.library_db_path()).migrate()
-        self._engine = ImporterEngine(store=RecordingStore(cfg_mod.library_db_path()))
+        self._jobs = JobStore(cfg_mod.library_db_path())
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -90,29 +92,22 @@ class ImportDialog(QDialog):
         if not files:
             self._log.append_line("Najpierw dodaj pliki.", "warning")
             return
-        library_root = Path(self._dest.get() or str(cfg_mod.default_recordings_dir()))
+        library_root = str(self._dest.get() or str(cfg_mod.default_recordings_dir()))
         category = self._category.text().strip() or None
         tags = [t.strip() for t in self._tags.text().split(",") if t.strip()]
 
         for path in files:
-            self._import_one(path, library_root, category, tags)
-
-        if self.imported_count:
-            self.accept()
-
-    def _import_one(
-        self, path: Path, library_root: Path, category: str | None, tags: list[str]
-    ) -> None:
-        """Importuje jeden plik; błędy loguje i nie przerywa reszty kolejki."""
-        try:
-            self._engine.import_file(
-                path,
-                library_root,
-                lambda frac, msg: None,
-                category=category,
-                tags=tags,
+            self._jobs.enqueue(
+                JOB_IMPORT,
+                payload={
+                    "src": str(Path(path)),
+                    "library_root": library_root,
+                    "category": category,
+                    "tags": tags,
+                },
             )
-            self._log.append_line(f"Zaimportowano: {path.name}", "ok")
-            self.imported_count += 1
-        except Exception as exc:  # pokazujemy błąd w logu, nie wywalamy GUI
-            self._log.append_line(f"Błąd importu {path.name}: {exc}", "error")
+            self._log.append_line(f"Dodano do kolejki importu: {Path(path).name}", "ok")
+            self.enqueued_count += 1
+
+        if self.enqueued_count:
+            self.accept()

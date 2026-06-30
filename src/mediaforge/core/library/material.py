@@ -37,6 +37,8 @@ class MaterialMetadata:
     audio_path: str | None = None
     thumbnail_path: str | None = None
     transcript_status: str = "none"  # none / done
+    transcript_json: str | None = None  # plik .json whisper.cpp (w folderze materiału)
+    transcript_srt: str | None = None
     summary_status: str = "none"
     status: str = "recorded"
 
@@ -60,6 +62,8 @@ class MaterialMetadata:
             "audio_path": self.audio_path,
             "thumbnail_path": self.thumbnail_path,
             "transcript_status": self.transcript_status,
+            "transcript_json": self.transcript_json,
+            "transcript_srt": self.transcript_srt,
             "summary_status": self.summary_status,
             "status": self.status,
         }
@@ -83,6 +87,8 @@ class MaterialMetadata:
             audio_path=_opt_str(data.get("audio_path")),
             thumbnail_path=_opt_str(data.get("thumbnail_path")),
             transcript_status=str(data.get("transcript_status", "none")),
+            transcript_json=_opt_str(data.get("transcript_json")),
+            transcript_srt=_opt_str(data.get("transcript_srt")),
             summary_status=str(data.get("summary_status", "none")),
             status=str(data.get("status", "recorded")),
         )

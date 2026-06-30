@@ -42,6 +42,9 @@ _COMPUTE_OVERRIDES_KEY = "compute_overrides"  # fingerprint maszyny → tier
 _PROVIDER_ASSIGNMENTS_KEY = "provider_assignments"  # nazwa zadania → ModelSpec
 _WHISPERCPP_PATH_KEY = "whispercpp_path"  # binarka whisper.cpp poza PATH (override sondy)
 _LITELLM_BASE_URL_KEY = "litellm_base_url"  # endpoint gatewaya LiteLLM (override sondy)
+_WHISPER_MODEL_KEY = "whisper_model"  # ścieżka do modelu whisper.cpp (.bin)
+_WHISPER_LANGUAGE_KEY = "whisper_language"  # 'auto' | 'pl' | 'en' (domyślnie auto)
+_WHISPER_THREADS_KEY = "whisper_threads"  # liczba wątków whisper-cli (opcjonalne)
 
 
 def load(on_dirty: Callable[[], None] | None = None) -> Config:
@@ -141,6 +144,29 @@ def get_litellm_base_url(cfg: Config) -> str | None:
 def set_litellm_base_url(cfg: Config, base_url: str) -> None:
     """Zapisuje endpoint gatewaya LiteLLM (override sondy)."""
     cfg[_LITELLM_BASE_URL_KEY] = base_url
+
+
+def get_whisper_model(cfg: Config) -> str | None:
+    """Ścieżka modelu whisper.cpp (.bin) z configu lub ``None`` (transkrypcja niedostępna)."""
+    value = cfg.get(_WHISPER_MODEL_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def set_whisper_model(cfg: Config, path: str) -> None:
+    """Zapisuje ścieżkę modelu whisper.cpp."""
+    cfg[_WHISPER_MODEL_KEY] = path
+
+
+def get_whisper_language(cfg: Config) -> str:
+    """Język transkrypcji (``auto``/``pl``/``en``); domyślnie ``auto`` (autodetekcja)."""
+    value = cfg.get(_WHISPER_LANGUAGE_KEY)
+    return value if isinstance(value, str) and value else "auto"
+
+
+def get_whisper_threads(cfg: Config) -> int | None:
+    """Liczba wątków whisper-cli z configu lub ``None`` (domyślne whisper.cpp)."""
+    value = cfg.get(_WHISPER_THREADS_KEY)
+    return value if isinstance(value, int) and value > 0 else None
 
 
 # ── Profil obliczeniowy per maszyna (nadpisanie tieru) ─────────────────────────

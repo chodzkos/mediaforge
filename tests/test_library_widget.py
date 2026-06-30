@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 
 from mediaforge.core import config as cfg_mod
+from mediaforge.core.jobs import JobStore
 from mediaforge.core.library.db import Database
 from mediaforge.core.library.material import MaterialMetadata, read_metadata, write_metadata
 from mediaforge.core.library.recordings import RecordingStore
@@ -81,13 +82,35 @@ def test_library_filters_by_category(
     assert widget._list.count() == 1
 
 
+def test_transcribe_button_enqueues_job(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = _isolate(monkeypatch, tmp_path)
+    _seed(db, tmp_path, "Wyklad", category="Sieci", tags=["tcp"])
+
+    widget = LibraryWidget()  # start_jobs() NIE wołane → brak wątku roboczego
+    qtbot.addWidget(widget)
+    widget._list.setCurrentRow(0)
+
+    # Bez whisper_model → nie kolejkuje (log błędu).
+    widget._on_transcribe()
+    assert JobStore(db).list_jobs() == []
+
+    # Z modelem → job transkrypcji w kolejce (recording_id materiału).
+    cfg_mod.set_whisper_model(widget._config, "/m/model.bin")
+    widget._on_transcribe()
+    jobs = JobStore(db).list_jobs()
+    assert len(jobs) == 1 and jobs[0].job_type == "transcribe"
+    assert jobs[0].recording_id is not None
+
+
 def test_import_dialog_constructs(
     qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _isolate(monkeypatch, tmp_path)
     dialog = ImportDialog()
     qtbot.addWidget(dialog)
-    assert dialog.imported_count == 0
-    # Bez plików import nie kończy dialogu (loguje ostrzeżenie).
+    assert dialog.enqueued_count == 0
+    # Bez plików import nie kolejkuje (loguje ostrzeżenie).
     dialog._on_import()
-    assert dialog.imported_count == 0
+    assert dialog.enqueued_count == 0
