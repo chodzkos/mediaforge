@@ -75,3 +75,24 @@ def test_render_report_text() -> None:
     text = report.render_report(detection.check_all())
     assert isinstance(text, str)
     assert "System:" in text and "Tier" in text and "yt-dlp:" in text
+
+
+def test_status_line_from_report() -> None:
+    # Pasek statusu czyta te same DANE co doctor (check_all) — krótka prezentacja.
+    rep = {
+        "ffmpeg": {"available": True},
+        "whispercpp": {"available": False},
+        "gpu": {"available": True, "name": "RTX 5090", "vram_gb": 24.0},
+        "compute": {"tier": "A"},
+    }
+    line = report.status_line(rep)
+    assert "FFmpeg: OK" in line
+    assert "whisper.cpp: brak" in line
+    assert "RTX 5090" in line
+    assert "Tier: A" in line
+
+
+def test_status_line_no_cuda() -> None:
+    line = report.status_line({"gpu": {"available": False}, "compute": {"tier": "C"}})
+    assert "CUDA: brak" in line
+    assert "Tier: C" in line

@@ -86,6 +86,20 @@ def _mark(ok: bool) -> str:
     return "✓" if ok else "✗"
 
 
+def status_line(report: dict[str, Any]) -> str:
+    """Zwięzły jednowierszowy status do paska GUI — z tych samych DANYCH co `doctor`.
+
+    Jedno źródło detekcji: pasek statusu i `doctor` czytają `check_all()`, tu tylko inna
+    (krótsza) prezentacja niż `render_report`.
+    """
+    ff = "OK" if report.get("ffmpeg", {}).get("available") else "brak"
+    wh = "OK" if report.get("whispercpp", {}).get("available") else "brak"
+    gpu = report.get("gpu", {})
+    cuda = f"{gpu.get('name', '')} {gpu.get('vram_gb', 0):g} GB" if gpu.get("available") else "brak"
+    tier = report.get("compute", {}).get("tier", "?")
+    return f"FFmpeg: {ff}  |  whisper.cpp: {wh}  |  CUDA: {cuda}  |  Tier: {tier}"
+
+
 def render_report(report: dict[str, Any]) -> str:
     """Czytelny render raportu (warstwa prezentacji, oddzielona od sond). Plain-text."""
     lines: list[str] = []

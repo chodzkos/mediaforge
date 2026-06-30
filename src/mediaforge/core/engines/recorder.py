@@ -42,7 +42,7 @@ from mediaforge.core.engines.ffmpeg_cmd import (
 )
 from mediaforge.core.library.recordings import RecordingStatus, RecordingStore
 
-# Flaga ukrywająca okno konsoli przy subprocess na Windows (jak w core/tools.py).
+# Flaga ukrywająca okno konsoli przy subprocess na Windows (jak w core/detection/tools.py).
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 

@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from mediaforge import __version__
 from mediaforge.core import config as cfg_mod
-from mediaforge.core.tools import Environment, detect_environment, status_line
+from mediaforge.core import detection
 from mediaforge.gui.about import open_about
 from mediaforge.gui.record_dialog import RecordDialog
 
@@ -144,17 +144,22 @@ class MainWindow(QMainWindow):
     # ── Środowisko / status ─────────────────────────────────────────────────--
 
     def _report_environment(self) -> None:
-        """Wykrywa narzędzia/GPU, wpisuje do paska statusu i logu startowego."""
-        env: Environment = detect_environment()
-        self._status_label.setText(status_line(env))
+        """Wpisuje do paska statusu i logu startowego — jedno źródło: detection.check_all()."""
+        report = detection.check_all(
+            whispercpp_path=cfg_mod.get_whispercpp_path(self._config),
+            litellm_base_url=cfg_mod.get_litellm_base_url(self._config),
+        )
+        self._status_label.setText(detection.status_line(report))
         self._log.log_info("mediaforge gotowy.")
-        ff = "OK" if env.ffmpeg.available else "brak"
-        wh = "OK" if env.whisper.available else "brak"
+        ff = "OK" if report["ffmpeg"]["available"] else "brak"
+        wh = "OK" if report["whispercpp"]["available"] else "brak"
         self._log.append_line(f"FFmpeg: {ff} · whisper.cpp: {wh}", "info")
-        gpu = f"{env.gpu.name} ({env.gpu.vram_gb:g} GB)" if env.gpu.has_cuda else "brak CUDA"
+        gpu_info = report["gpu"]
+        has_cuda = bool(gpu_info["available"])
+        gpu = f"{gpu_info['name']} ({gpu_info['vram_gb']:g} GB)" if has_cuda else "brak CUDA"
         self._log.append_line(
-            f"GPU: {gpu} · profil obliczeniowy: Tier {env.compute.tier.value}",
-            "info" if env.gpu.has_cuda else "warn",
+            f"GPU: {gpu} · profil obliczeniowy: Tier {report['compute']['tier']}",
+            "info" if has_cuda else "warn",
         )
 
     # ── Geometria okna (persystencja przez Config) ─────────────────────────────

@@ -11,17 +11,21 @@ from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 
 from mediaforge.core import config as cfg_mod
-from mediaforge.core.compute import GPUArch, classify
-from mediaforge.core.tools import Environment, GpuInfo, ToolStatus
+from mediaforge.core import detection
 from mediaforge.gui import main_window as mw
 from mediaforge.gui.about import about_tabs
 
-_FAKE_ENV = Environment(
-    ffmpeg=ToolStatus("ffmpeg", True, "/usr/bin/ffmpeg"),
-    whisper=ToolStatus("whisper.cpp", False, "brak"),
-    gpu=GpuInfo(True, "RTX 5090", 24.0, GPUArch.BLACKWELL),
-    compute=classify(True, 24.0, GPUArch.BLACKWELL),
-)
+# Raport w kształcie detection.check_all() — jedno źródło detekcji (status bar == doctor).
+_FAKE_REPORT = {
+    "system": {"os": "Linux", "python": "3.12"},
+    "ffmpeg": {"available": True, "version": "6.1", "encoders": {}},
+    "whispercpp": {"available": False, "path": None},
+    "ytdlp": {"available": False, "version": ""},
+    "gpu": {"available": True, "name": "RTX 5090", "vram_gb": 24.0, "arch": "blackwell"},
+    "compute": {"tier": "A", "note": "pełnia lokalnie"},
+    "litellm": {"available": False, "base_url": ""},
+    "providers": {},
+}
 
 
 @pytest.fixture
@@ -32,7 +36,7 @@ def cfg(tmp_path: Path) -> Config:
 def _make_window(
     qtbot: QtBot, qapp: QApplication, cfg: Config, monkeypatch: pytest.MonkeyPatch
 ) -> mw.MainWindow:
-    monkeypatch.setattr(mw, "detect_environment", lambda: _FAKE_ENV)
+    monkeypatch.setattr(detection, "check_all", lambda **_kwargs: _FAKE_REPORT)
     tm = ThemeManager(qapp, cfg)
     tm.apply(tm.setting)
     window = mw.MainWindow(tm, cfg)
