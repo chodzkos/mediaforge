@@ -16,9 +16,11 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -107,6 +109,66 @@ def whisper_backend_from_output(stderr: str) -> WhisperRuntime:
     if any(pattern.search(stderr) for pattern in _CUDA_NEG):
         return "cpu"
     return "unknown"
+
+
+def build_silence_wav_command(
+    out: Path, *, seconds: float = 0.1, ffmpeg: str = "ffmpeg"
+) -> list[str]:
+    """Komenda generująca krótką ciszę 16 kHz mono — sygnał próbny do sondy runtime."""
+    return [
+        ffmpeg,
+        "-hide_banner",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=r=16000:cl=mono",
+        "-t",
+        str(seconds),
+        "-c:a",
+        "pcm_s16le",
+        str(out),
+    ]
+
+
+def detect_whisper_runtime(
+    whisper_cli: str,
+    model: str | None,
+    *,
+    ffmpeg: str = "ffmpeg",
+    runner: Runner | None = None,
+) -> WhisperRuntime:
+    """Empiryczna sonda: krótka cisza → whisper-cli na modelu → realny backend.
+
+    EMPIRYKA zamiast progu arch (znosi sm_75/cu130 — na Pascalu po prostu zobaczysz wynik).
+    Bez modelu nie da się odpalić → ``unknown`` (doctor pokaże „model nieustawiony"). Heurystyka
+    arch+VRAM (``compute.classify``) ZOSTAJE fallbackiem decyzji o tierze — to tylko obserwacja.
+    """
+    if not model:
+        return "unknown"
+    run = runner if runner is not None else _default_runner
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = Path(tmp) / "probe.wav"
+        run(build_silence_wav_command(wav, ffmpeg=ffmpeg))
+        if not wav.is_file():
+            return "unknown"
+        result = run(
+            build_whisper_command(
+                model,
+                wav,
+                Path(tmp) / "probe",
+                language="auto",
+                beam_size=None,
+                whisper_cli=whisper_cli,
+            )
+        )
+    return whisper_backend_from_output(result.stderr)
+
+
+@lru_cache(maxsize=8)
+def cached_whisper_runtime(whisper_cli: str, model: str) -> WhisperRuntime:
+    """Sonda runtime z cache (model ładuje się ~1-2 s) — patrz :func:`detect_whisper_runtime`."""
+    return detect_whisper_runtime(whisper_cli, model)
 
 
 # ── Czyste buildery i parser (testowalne bez whisper.cpp/ffmpeg) ──────────────

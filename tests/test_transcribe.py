@@ -9,7 +9,9 @@ from mediaforge.core.ai.transcribe import (
     RunResult,
     TranscribeOptions,
     WhisperCppBackend,
+    build_silence_wav_command,
     build_whisper_command,
+    detect_whisper_runtime,
     parse_whisper_json,
     whisper_backend_from_output,
 )
@@ -114,3 +116,48 @@ def test_whispercpp_backend_orchestration(tmp_path: Path) -> None:
     # Najpierw konwersja do WAV, potem whisper z --output-json.
     assert any("pcm_s16le" in c for c in commands)
     assert any("--output-json" in c for c in commands)
+
+
+# ── Empiryczna sonda runtime (doctor) ─────────────────────────────────────────
+
+
+def test_silence_command_generates_16k_mono() -> None:
+    cmd = build_silence_wav_command(Path("p.wav"))
+    assert "anullsrc=r=16000:cl=mono" in cmd and "pcm_s16le" in cmd
+    assert cmd[cmd.index("-t") + 1] == "0.1"
+
+
+def test_detect_runtime_cuda() -> None:
+    def fake(cmd: list[str]) -> RunResult:
+        if "anullsrc=r=16000:cl=mono" in cmd:  # cisza → utwórz wav, by sonda szła dalej
+            Path(cmd[-1]).write_bytes(b"RIFF")
+            return RunResult(0, "")
+        return RunResult(0, _CUDA_LOG)  # przebieg whisper
+
+    assert detect_whisper_runtime("whisper-cli", "/m/model.bin", runner=fake) == "cuda"
+
+
+def test_detect_runtime_cpu() -> None:
+    def fake(cmd: list[str]) -> RunResult:
+        if "anullsrc=r=16000:cl=mono" in cmd:
+            Path(cmd[-1]).write_bytes(b"RIFF")
+            return RunResult(0, "")
+        return RunResult(0, _CPU_LOG)
+
+    assert detect_whisper_runtime("whisper-cli", "/m/model.bin", runner=fake) == "cpu"
+
+
+def test_detect_runtime_unknown_without_model() -> None:
+    # Bez modelu nie odpalamy whisper (runner nie jest wołany) → unknown (degraded).
+    def boom(cmd: list[str]) -> RunResult:
+        raise AssertionError("runner nie powinien być wołany bez modelu")
+
+    assert detect_whisper_runtime("whisper-cli", None, runner=boom) == "unknown"
+    assert detect_whisper_runtime("whisper-cli", "", runner=boom) == "unknown"
+
+
+def test_detect_runtime_unknown_when_wav_fails() -> None:
+    def fake(cmd: list[str]) -> RunResult:
+        return RunResult(1, "")  # nie tworzy wav → sonda nie ma czego transkrybować
+
+    assert detect_whisper_runtime("whisper-cli", "/m/model.bin", runner=fake) == "unknown"
