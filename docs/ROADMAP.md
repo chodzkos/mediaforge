@@ -40,6 +40,8 @@ Szkielet pakietu (`core`/`gui`/`cli`), `pyproject` + uv, ruff/mypy/pytest, CI (W
 
 **Kolejka `jobs` (ThreadPoolExecutor + tabela `jobs` + odświeżanie GUI przez `QTimer`) i przepięcie na nią ZARÓWNO transkrypcji, JAK i importu z S2** — koniec importu synchronicznego (spłata długu z S2). Operacje długie idą przez wątek, GUI pokazuje realny postęp; Stop/anulowanie działa.
 
+> Follow-up domknięty: postęp transkrypcji pokazywany w **procentach** (whisper-cli `--print-progress` → `jobs.progress`), nie tylko status „running". Status-only progres z pierwszej wersji S3 zastąpiony.
+
 **Akceptacja:** transkrypcja 90-min nagrania PL i EN; klik w tekst przeskakuje odtwarzanie; brak crasha na sm_120 (default whisper.cpp); na słabszej maszynie (Tier B) transkrypcja lokalna z mniejszym modelem; ręczne nadpisanie tieru i backendu działa.
 
 ## ☐ S4 — Streszczenia i notatki edukacyjne

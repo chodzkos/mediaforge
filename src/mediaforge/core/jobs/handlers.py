@@ -61,7 +61,10 @@ def make_transcribe_handler(
             raise ValueError("transcribe: materiał bez pliku audio/wideo")
 
         progress(0.1)
-        result = backend.transcribe(folder / relative, folder, opts)
+        # Procent z whisper-cli → jobs.progress (0..1). Throttle robi backend (zmiana %).
+        result = backend.transcribe(
+            folder / relative, folder, opts, on_progress=lambda pct: progress(pct / 100.0)
+        )
         updated = replace(
             meta,
             transcript_status="done",

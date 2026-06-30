@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from mediaforge.core.ai.transcribe import (
@@ -34,8 +35,15 @@ class _FakeBackend:
     name = "fake"
 
     def transcribe(
-        self, source: Path, out_dir: Path, opts: TranscribeOptions
+        self,
+        source: Path,
+        out_dir: Path,
+        opts: TranscribeOptions,
+        *,
+        on_progress: Callable[[int], None] | None = None,
     ) -> TranscriptionResult:
+        if on_progress is not None:
+            on_progress(50)  # symulacja postępu w połowie
         json_path = out_dir / f"{source.stem}.json"
         srt_path = out_dir / f"{source.stem}.srt"
         json_path.write_text("{}", encoding="utf-8")
@@ -80,6 +88,33 @@ def test_transcribe_job_writes_status_and_files(tmp_path: Path) -> None:
     store.rescan(tmp_path / "lib")
     again = store.get_material(rec_id)
     assert again is not None and again[1].transcript_status == "done"
+
+
+def test_transcribe_handler_forwards_progress(tmp_path: Path) -> None:
+    """Handler przekazuje on_progress(pct) → callback postępu kolejki jako frakcję (pct/100)."""
+    from mediaforge.core.jobs.store import Job
+
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, _ = _seed_material(store, tmp_path / "lib", "M")
+    handler = make_transcribe_handler(store, _FakeBackend())
+
+    seen: list[float] = []
+    job = Job(
+        id=1,
+        recording_id=rec_id,
+        job_type=JOB_TRANSCRIBE,
+        status=JobStatus.RUNNING,
+        progress=0.0,
+        error_message=None,
+        retry_count=0,
+        max_retries=0,
+        payload={},
+        created_at="t",
+        updated_at="t",
+    )
+    handler(job, seen.append)
+    assert 0.5 in seen  # on_progress(50) → progress(0.5)
 
 
 def test_transcribe_does_not_reset_other_material(tmp_path: Path) -> None:
