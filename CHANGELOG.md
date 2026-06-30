@@ -6,6 +6,9 @@ projekt stosuje [Semantic Versioning](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+### Fixed
+- **Nagrywanie ekranu: skokowe/gubione klatki przy pełnoekranowym wideo.** Wejście wideo przełączone z `gdigrab` (GDI, CPU-bound — gubił klatki niezależnie od NVENC) na **`ddagrab`** (Desktop Duplication API, D3D11, GPU — jak OBS): `-f lavfi -i ddagrab=output_idx=<monitor>:framerate=<fps>` + `-vf hwdownload,format=bgra,format=yuv420p` (ddagrab oddaje tekstury GPU). Enkoder NVENC z `-tune hq`, wymuszony **CFR** (`-fps_mode cfr`) — koniec zmiennego framerate'u w pliku; domyślnie **60 fps**. Wybór monitora = `output_idx` (hook pod hybrydę iGPU+dGPU). Audio (dshow loopback+mic, miks) i ścieżki wyjścia bez zmian. **Trade-off ddagrab:** pod-region i okno po tytule nie są egzekwowane (łapany cały monitor); treści chronione DRM się nie nagrają.
+
 ### Added
 - **Postęp transkrypcji w procentach (follow-up S3).** whisper-cli z `--print-progress`, stderr strumieniowany linia po linii (Popen) i parsowany (`parse_whisper_progress`) → `jobs.progress` (0..1, throttle: tylko przy zmianie %); GUI pokazuje „Transkrypcja… N%" zamiast samego „running" (długi wykład nie wygląda na zawieszony). Status-only progres z S3 **zastąpiony procentem**; reużyto istniejącej kolumny `jobs.progress` (bez nowej). Backend (cuda/cpu) nadal z pełnego buforu stderr.
 - **S3 — Transkrypcja na kolejce `jobs` (whisper.cpp, CUDA, torch-free).**

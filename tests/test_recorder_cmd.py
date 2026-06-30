@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from mediaforge.core.engines.base import QualityOption
 from mediaforge.core.engines.ffmpeg_cmd import (
     PRESETS,
     AudioConfig,
@@ -11,6 +12,11 @@ from mediaforge.core.engines.ffmpeg_cmd import (
     estimate_size_mb,
     select_video_encoder,
 )
+
+
+def _has_substr(cmd: list[str], needle: str) -> bool:
+    return any(needle in arg for arg in cmd)
+
 
 _ALL_ENCODERS = {
     "h264_nvenc": True,
@@ -62,7 +68,7 @@ def test_encoder_last_resort_is_libx264() -> None:
 # ── Budowa komendy: tryby źródła ───────────────────────────────────────────────
 
 
-def test_fullscreen_uses_gdigrab_desktop() -> None:
+def test_fullscreen_uses_ddagrab_output() -> None:
     cmd = build_record_command(
         source=CaptureSource(mode=CaptureMode.FULLSCREEN),
         audio=AudioConfig(system_audio=False),
@@ -70,34 +76,39 @@ def test_fullscreen_uses_gdigrab_desktop() -> None:
         encoders=_ALL_ENCODERS,
         segment_pattern="/tmp/seg_%03d.mkv",
     )
-    assert "gdigrab" in cmd
-    assert cmd[cmd.index("-i") + 1] == "desktop"
-    assert _arg_value(cmd, "-framerate") == "30"
+    assert "gdigrab" not in cmd  # GDI (gubił klatki) zastąpiony przez Desktop Duplication
+    assert _arg_value(cmd, "-f") == "lavfi"
+    assert _has_substr(cmd, "ddagrab=output_idx=0:framerate=30")
 
 
-def test_region_sets_offset_and_size() -> None:
+def test_monitor_selects_output_idx() -> None:
+    # Wybór monitora (GUI: mode=REGION, monitor=N) → output_idx ddagrab, nie offset/region.
     cmd = build_record_command(
-        source=CaptureSource(mode=CaptureMode.REGION, region=(100, 200, 1280, 720)),
+        source=CaptureSource(mode=CaptureMode.REGION, monitor=1, region=(100, 200, 1280, 720)),
         audio=AudioConfig(system_audio=False),
         quality=PRESETS["standard"],
         encoders=_ALL_ENCODERS,
         segment_pattern="/tmp/seg_%03d.mkv",
     )
-    assert _arg_value(cmd, "-offset_x") == "100"
-    assert _arg_value(cmd, "-offset_y") == "200"
-    assert _arg_value(cmd, "-video_size") == "1280x720"
+    assert _has_substr(cmd, "ddagrab=output_idx=1:")
+    assert "-offset_x" not in cmd and "-video_size" not in cmd
 
 
-def test_window_captures_by_title() -> None:
+def test_video_pipeline_ddagrab_nvenc_cfr() -> None:
+    """Rdzeń poprawki: ddagrab + hwdownload/format + NVENC + CFR (koniec skokowości)."""
     cmd = build_record_command(
-        source=CaptureSource(mode=CaptureMode.WINDOW, window_title="Mój wykład"),
+        source=CaptureSource(mode=CaptureMode.FULLSCREEN),
         audio=AudioConfig(system_audio=False),
-        quality=PRESETS["standard"],
+        quality=QualityOption(label="Test", video_codec="h264", fps=60, bitrate_kbps=12000),
         encoders=_ALL_ENCODERS,
         segment_pattern="/tmp/seg_%03d.mkv",
     )
-    assert "title=Mój wykład" in cmd
-    assert "desktop" not in cmd
+    assert _has_substr(cmd, "ddagrab=output_idx=0:framerate=60")
+    vf = _arg_value(cmd, "-vf")
+    assert "hwdownload" in vf and "format=bgra" in vf and "format=yuv420p" in vf
+    assert _arg_value(cmd, "-c:v") == "h264_nvenc"
+    assert _arg_value(cmd, "-fps_mode") == "cfr"
+    assert _arg_value(cmd, "-tune") == "hq"
 
 
 # ── Budowa komendy: audio ──────────────────────────────────────────────────────
@@ -162,7 +173,7 @@ def test_audio_only_has_no_video_input() -> None:
         encoders=_ALL_ENCODERS,
         segment_pattern="/tmp/seg_%03d.mka",
     )
-    assert "gdigrab" not in cmd
+    assert not _has_substr(cmd, "ddagrab")  # brak wejścia wideo
     assert "-c:v" not in cmd
     assert "audio=Loopback" in cmd
 
@@ -180,7 +191,7 @@ def test_segmentation_args_present() -> None:
         segment_seconds=120,
         segment_start_number=4,
     )
-    # Jest kilka `-f` (gdigrab dla wejścia, segment dla muxera) — sprawdzamy muxer segmentów.
+    # Jest kilka `-f` (lavfi dla wejścia ddagrab, segment dla muxera) — sprawdzamy muxer.
     assert "segment" in cmd and cmd[cmd.index("segment") - 1] == "-f"
     assert _arg_value(cmd, "-segment_time") == "120"
     assert _arg_value(cmd, "-segment_start_number") == "4"
