@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -65,6 +67,30 @@ def test_queue_processes_pending(tmp_path: Path) -> None:
     assert queue.process_pending() == 2
     assert set(seen) == {a, b}
     assert store.get(a) is not None and store.get(a).status is JobStatus.DONE  # type: ignore[union-attr]
+
+
+def test_gpu_lane_serializes_jobs(tmp_path: Path) -> None:
+    """Linia ``max_workers=1`` serializuje zadania GPU — nigdy dwa naraz w VRAM."""
+    store = _store(tmp_path)
+    lock = threading.Lock()
+    active = {"now": 0, "max": 0}
+
+    def gpu_handler(job: Job, progress: Callable[[float], None]) -> None:
+        with lock:
+            active["now"] += 1
+            active["max"] = max(active["max"], active["now"])
+        time.sleep(0.02)  # okno na nakładkę, gdyby zadania szły równolegle
+        with lock:
+            active["now"] -= 1
+
+    # Transkrypcja w linii 1-wątkowej, mimo wspólnej puli workers=4.
+    queue = JobQueue(store, workers=4, lanes={"transcribe": 1})
+    queue.register("transcribe", gpu_handler)
+    for _ in range(4):
+        store.enqueue("transcribe")
+
+    assert queue.process_pending() == 4
+    assert active["max"] == 1  # nigdy więcej niż jeden GPU-job naraz
 
 
 def test_queue_marks_failure_on_handler_exception(tmp_path: Path) -> None:

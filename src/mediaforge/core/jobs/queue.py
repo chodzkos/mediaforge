@@ -4,12 +4,19 @@ Executor to ``concurrent.futures.ThreadPoolExecutor`` (std-lib) — nie QThread 
 bo ``core`` nie importuje Qt. Handler per typ zadania dostaje :class:`Job` i
 callback postępu (aktualizuje store). Wyjątek handlera → ``mark_failed`` (retry
 liczy store). GUI obserwuje stan kolejki przez odpytywanie store (np. ``QTimer``).
+
+**Linie (lanes) — serializacja zadań GPU.** Każdy typ zadania może mieć dedykowaną
+linię z własnym ``max_workers`` (osobny executor). Transkrypcja (whisper.cpp na GPU)
+biegnie z ``max_workers=1`` — jeden model w VRAM naraz (zasada „sequential VRAM" z
+CLAUDE.md, która później obejmie VLM/LLM). Import (I/O + ffmpeg, bez modelu) ma własną
+linię i nie czeka na GPU. Typy bez własnej linii idą wspólną pulą ``workers``.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,6 +26,8 @@ logger = logging.getLogger("mediaforge")
 
 # Handler zadania: dostaje Job i callback postępu ``progress(frakcja_0_1)``.
 JobHandler = Callable[[Job, Callable[[float], None]], None]
+
+_DEFAULT_LANE = "_default"
 
 
 class JobQueue:
@@ -31,12 +40,21 @@ class JobQueue:
 
     Args:
         store: magazyn zadań (tabela ``jobs``).
-        workers: rozmiar puli wątków.
+        workers: rozmiar wspólnej puli dla typów bez dedykowanej linii.
+        lanes: mapa ``job_type -> max_workers`` (dedykowana linia/executor). Linia z
+            ``max_workers=1`` serializuje swój typ (np. transkrypcja na GPU).
     """
 
-    def __init__(self, store: JobStore, *, workers: int = 2) -> None:
+    def __init__(
+        self,
+        store: JobStore,
+        *,
+        workers: int = 2,
+        lanes: dict[str, int] | None = None,
+    ) -> None:
         self._store = store
         self._workers = workers
+        self._lanes = dict(lanes or {})
         self._handlers: dict[str, JobHandler] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -44,6 +62,13 @@ class JobQueue:
     def register(self, job_type: str, handler: JobHandler) -> None:
         """Rejestruje handler dla danego typu zadania."""
         self._handlers[job_type] = handler
+
+    def _lane_of(self, job_type: str) -> str:
+        """Klucz linii dla typu zadania (własna linia albo wspólna pula)."""
+        return job_type if job_type in self._lanes else _DEFAULT_LANE
+
+    def _lane_workers(self, lane: str) -> int:
+        return self._lanes.get(lane, self._workers)
 
     def _run_job(self, job: Job) -> None:
         """Uruchamia handler zadania; sukces → done, wyjątek/brak handlera → failed."""
@@ -60,10 +85,11 @@ class JobQueue:
             self._store.mark_done(job.id)
 
     def process_pending(self) -> int:
-        """Opróżnia bieżące ``pending`` zadania w puli wątków; zwraca liczbę wykonań.
+        """Opróżnia bieżące ``pending`` zadania; zwraca liczbę wykonań.
 
-        Zadania ponowione (retry → ``pending``) zostają na następny przebieg, więc
-        jedno wywołanie nie zapętla się na trwale failującym zadaniu.
+        Każda linia biegnie w osobnym executorze z własnym ``max_workers`` — typ z linią
+        1-wątkową (np. transkrypcja) jest serializowany. Zadania ponowione (retry →
+        ``pending``) zostają na następny przebieg, więc jedno wywołanie się nie zapętla.
         """
         jobs: list[Job] = []
         while True:
@@ -73,24 +99,37 @@ class JobQueue:
             jobs.append(job)
         if not jobs:
             return 0
-        with ThreadPoolExecutor(max_workers=self._workers) as pool:
-            list(pool.map(self._run_job, jobs))
+        groups: dict[str, list[Job]] = defaultdict(list)
+        for job in jobs:
+            groups[self._lane_of(job.job_type)].append(job)
+        for lane, group in groups.items():
+            with ThreadPoolExecutor(max_workers=self._lane_workers(lane)) as pool:
+                list(pool.map(self._run_job, group))
         return len(jobs)
 
     def start(self, poll_interval: float = 0.2) -> None:
-        """Startuje dispatcher w tle (pollujący store i wykonujący zadania)."""
+        """Startuje dispatcher w tle (pollujący store i wykonujący zadania per linia)."""
         if self._thread is not None:
             return
         self._stop.clear()
 
         def _loop() -> None:
-            with ThreadPoolExecutor(max_workers=self._workers) as pool:
+            executors: dict[str, ThreadPoolExecutor] = {}
+            try:
                 while not self._stop.is_set():
                     job = self._store.claim_next()
                     if job is None:
                         self._stop.wait(poll_interval)
                         continue
+                    lane = self._lane_of(job.job_type)
+                    pool = executors.get(lane)
+                    if pool is None:
+                        pool = ThreadPoolExecutor(max_workers=self._lane_workers(lane))
+                        executors[lane] = pool
                     pool.submit(self._run_job, job)
+            finally:
+                for pool in executors.values():
+                    pool.shutdown(wait=True)
 
         self._thread = threading.Thread(target=_loop, name="mediaforge-jobs", daemon=True)
         self._thread.start()
