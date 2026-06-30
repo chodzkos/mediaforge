@@ -40,6 +40,8 @@ _LAST_DIRS_KEY = "last_dirs"
 _WINDOW_GEOMETRY_KEY = "window_geometry"
 _COMPUTE_OVERRIDES_KEY = "compute_overrides"  # fingerprint maszyny → tier
 _PROVIDER_ASSIGNMENTS_KEY = "provider_assignments"  # nazwa zadania → ModelSpec
+_WHISPERCPP_PATH_KEY = "whispercpp_path"  # binarka whisper.cpp poza PATH (override sondy)
+_LITELLM_BASE_URL_KEY = "litellm_base_url"  # endpoint gatewaya LiteLLM (override sondy)
 
 
 def load(on_dirty: Callable[[], None] | None = None) -> Config:
@@ -114,6 +116,31 @@ def get_window_geometry(cfg: Config) -> str | None:
 def set_window_geometry(cfg: Config, geometry_b64: str) -> None:
     """Zapisuje geometrię okna (string base64)."""
     cfg[_WINDOW_GEOMETRY_KEY] = geometry_b64
+
+
+# ── Override'y sond detekcji (przekazywane do detection.check_all) ─────────────
+
+
+def get_whispercpp_path(cfg: Config) -> str | None:
+    """Ręcznie wskazana binarka whisper.cpp (poza PATH) lub ``None`` (autodetekcja)."""
+    value = cfg.get(_WHISPERCPP_PATH_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def set_whispercpp_path(cfg: Config, path: str) -> None:
+    """Zapisuje ścieżkę binarki whisper.cpp (override sondy)."""
+    cfg[_WHISPERCPP_PATH_KEY] = path
+
+
+def get_litellm_base_url(cfg: Config) -> str | None:
+    """Endpoint gatewaya LiteLLM z configu lub ``None`` (sonda użyje domyślnego)."""
+    value = cfg.get(_LITELLM_BASE_URL_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def set_litellm_base_url(cfg: Config, base_url: str) -> None:
+    """Zapisuje endpoint gatewaya LiteLLM (override sondy)."""
+    cfg[_LITELLM_BASE_URL_KEY] = base_url
 
 
 # ── Profil obliczeniowy per maszyna (nadpisanie tieru) ─────────────────────────

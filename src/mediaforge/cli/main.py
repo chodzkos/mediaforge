@@ -25,11 +25,34 @@ def version() -> None:
 @app.command()
 def info() -> None:
     """Wykryte narzędzia i GPU (ffmpeg / whisper.cpp / CUDA + tier obliczeniowy)."""
-    from mediaforge.core.tools import detect_environment, status_line
+    from mediaforge.core import config, detection
 
-    env = detect_environment()
-    typer.echo(status_line(env))
-    typer.echo(env.compute.note)
+    cfg = config.load()
+    report = detection.check_all(
+        whispercpp_path=config.get_whispercpp_path(cfg),
+        litellm_base_url=config.get_litellm_base_url(cfg),
+    )
+    typer.echo(detection.status_line(report))
+    typer.echo(report["compute"]["note"])
+
+
+@app.command()
+def doctor(as_json: bool = typer.Option(False, "--json")) -> None:
+    """Sprawdź dostępność narzędzi i zasobów (ffmpeg, whisper.cpp, GPU, LiteLLM)."""
+    from mediaforge.core import config, detection
+
+    cfg = config.load()
+    report = detection.check_all(
+        whispercpp_path=config.get_whispercpp_path(cfg),
+        litellm_base_url=config.get_litellm_base_url(cfg),
+    )
+    if as_json:
+        import json
+
+        # default=str — path to obiekt Path (niesserializowalny wprost).
+        typer.echo(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    else:
+        typer.echo(detection.render_report(report))
 
 
 @app.command()

@@ -14,7 +14,7 @@ import sys
 import mediaforge.core.config
 import mediaforge.core.secrets
 import mediaforge.core.logging_setup
-import mediaforge.core.tools
+import mediaforge.core.detection
 import mediaforge.core.compute
 import mediaforge.core.jobs
 import mediaforge.core.library
