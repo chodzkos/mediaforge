@@ -22,6 +22,15 @@ from mediaforge.core.library.recordings import RecordingStore
 JOB_TRANSCRIBE = "transcribe"
 JOB_IMPORT = "import"
 
+# Linie wykonawcze. GPU = jeden executor (max_workers=1) dzielony przez WSZYSTKIE zadania
+# modelowe (transkrypcja, później VLM/LLM) → tylko jeden model w VRAM naraz (sequential VRAM
+# z CLAUDE.md). IO = import (kopia+ffmpeg), niezależny od GPU.
+GPU_LANE = "gpu"
+IO_LANE = "io"
+# Domyślny rozmiar linii i trasy job_type→linia (rozszerzane o JOB_VLM/JOB_LLM → GPU_LANE).
+DEFAULT_LANES: dict[str, int] = {GPU_LANE: 1, IO_LANE: 2}
+DEFAULT_ROUTES: dict[str, str] = {JOB_TRANSCRIBE: GPU_LANE, JOB_IMPORT: IO_LANE}
+
 _ProgressCb = Callable[[float], None]
 _Handler = Callable[[Job, _ProgressCb], None]
 

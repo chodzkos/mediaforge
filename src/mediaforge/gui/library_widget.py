@@ -32,6 +32,8 @@ from mediaforge.core.ai.transcribe import WhisperCppBackend
 from mediaforge.core.engines.import_engine import ImporterEngine
 from mediaforge.core.jobs import JobQueue, JobStatus, JobStore
 from mediaforge.core.jobs.handlers import (
+    DEFAULT_LANES,
+    DEFAULT_ROUTES,
     JOB_IMPORT,
     JOB_TRANSCRIBE,
     make_import_handler,
@@ -69,7 +71,7 @@ class LibraryWidget(QWidget):
         # rejestrujemy teraz, ale wątek roboczy startuje dopiero start_jobs() (testy go nie
         # uruchamiają — sprawdzają samo kolejkowanie).
         self._jobs_store = JobStore(db_path)
-        self._queue = JobQueue(self._jobs_store, lanes={JOB_TRANSCRIBE: 1, JOB_IMPORT: 2})
+        self._queue = JobQueue(self._jobs_store, lanes=DEFAULT_LANES, routes=DEFAULT_ROUTES)
         self._queue.register(JOB_IMPORT, make_import_handler(ImporterEngine(store=self._store)))
         self._queue.register(JOB_TRANSCRIBE, make_transcribe_handler(self._store, self._backend()))
         self._seen: dict[int, str] = {}

@@ -38,11 +38,18 @@ class JobQueue:
     * :meth:`process_pending` — synchroniczne opróżnienie kolejki (CLI/testy);
     * :meth:`start`/:meth:`stop` — dispatcher w tle (GUI), pollujący nowe zadania.
 
+    **Linie współdzielone (sequential VRAM).** ``lanes`` to mapa NAZWA→max_workers
+    (osobny executor na linię), a ``routes`` przypisuje ``job_type`` do linii. Wiele typów
+    GPU (transkrypcja, później VLM/LLM) wskazuje TĘ SAMĄ linię ``gpu`` (max_workers=1) →
+    jeden executor → tylko jeden model w VRAM naraz, niezależnie od typu zadania. To nie
+    serializacja „typ-względem-siebie", lecz globalna serializacja całej linii GPU. Typy bez
+    trasy idą wspólną pulą ``workers``.
+
     Args:
         store: magazyn zadań (tabela ``jobs``).
-        workers: rozmiar wspólnej puli dla typów bez dedykowanej linii.
-        lanes: mapa ``job_type -> max_workers`` (dedykowana linia/executor). Linia z
-            ``max_workers=1`` serializuje swój typ (np. transkrypcja na GPU).
+        workers: rozmiar wspólnej puli dla typów bez trasy.
+        lanes: mapa ``nazwa_linii -> max_workers`` (jeden executor na linię).
+        routes: mapa ``job_type -> nazwa_linii``.
     """
 
     def __init__(
@@ -51,10 +58,12 @@ class JobQueue:
         *,
         workers: int = 2,
         lanes: dict[str, int] | None = None,
+        routes: dict[str, str] | None = None,
     ) -> None:
         self._store = store
         self._workers = workers
         self._lanes = dict(lanes or {})
+        self._routes = dict(routes or {})
         self._handlers: dict[str, JobHandler] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -64,8 +73,9 @@ class JobQueue:
         self._handlers[job_type] = handler
 
     def _lane_of(self, job_type: str) -> str:
-        """Klucz linii dla typu zadania (własna linia albo wspólna pula)."""
-        return job_type if job_type in self._lanes else _DEFAULT_LANE
+        """Nazwa linii dla typu zadania (trasa albo wspólna pula). Wspólna linia GPU =
+        globalna serializacja modeli (transkrypcja + przyszłe VLM/LLM na tej samej linii)."""
+        return self._routes.get(job_type, _DEFAULT_LANE)
 
     def _lane_workers(self, lane: str) -> int:
         return self._lanes.get(lane, self._workers)
