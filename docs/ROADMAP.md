@@ -27,13 +27,13 @@ Szkielet pakietu (`core`/`gui`/`cli`), `pyproject` + uv, ruff/mypy/pytest, CI (W
 
 **Profile źródeł (per domena) → odroczone do S5.** Domenowe klucze pasują do downloadu/URL-i (S5), nie do importu lokalnego; tabela `source_profiles` została w schemacie. (To NIE to samo co ewentualne lekkie *presety importu* auto-uzupełniające metadane — te są osobną, lżejszą rzeczą, nie domenowymi profilami.)
 
-**Import synchroniczny = świadomy dług.** Kopia+FFmpeg blokują pętlę zdarzeń (UI zamarza na czas importu wielogigowego pliku; `setText("Importowanie…")` i tak by się nie przemalował przy zablokowanej pętli). Docelowe rozwiązanie to wątek z kolejki `jobs` — przepięcie w S3, bez tymczasowego QThread (półśrodek wyrzucany przy S3 = duplikacja).
+**Import synchroniczny = świadomy dług → SPŁACONY w S3.** Kopia+FFmpeg blokowały pętlę zdarzeń; od S3 import idzie przez kolejkę `jobs` (kind `import`, wątek roboczy), bez tymczasowego QThread.
 
 **Akceptacja:** import pliku tworzy kompletny folder + wpis; biblioteka filtruje po tagach/kategoriach; metadane edytowalne i trwałe; indeks SQLite odtwarzalny z `metadata.json` (rescan).
 
 > Znana decyzja: wpisy sprzed S2 z `folder=NULL` przeżywają samonaprawę schematu, ale są niewidoczne w bibliotece (filtr `folder IS NOT NULL`) — dane zachowane, do ewentualnego backfillu; nie bug.
 
-## ☐ S3 — Transkrypcja
+## ☑ S3 — Transkrypcja
 **Gałąź:** `feat/s3-transcribe`
 
 `TranscriptionBackend` (Protocol). Default **whisper.cpp (CUDA)**; alternatywy: faster-whisper (`float16`), insanely-fast-whisper (tor mocy, opcjonalny). **Profil obliczeniowy per maszyna (`core/compute.py`): tier A/B/C wg architektury GPU i VRAM (nie tylko VRAM!) → wybór toru lokalny/chmura + rozmiar modelu Whisper.** Wykrywanie języka (PL/EN), eksport TXT/SRT/VTT, segmenty czasowe, **klikalne timestampy** (skok do momentu), edycja transkryptu, cache. Opcjonalna diaryzacja (`pyannote`) jako osobny etap.
