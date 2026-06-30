@@ -42,6 +42,8 @@ _RECORDINGS_COLUMNS: dict[str, str] = {
     "audio_path": "TEXT",
     "thumbnail_path": "TEXT",
     "transcript_status": "TEXT NOT NULL DEFAULT 'none'",
+    "transcript_json": "TEXT",
+    "transcript_srt": "TEXT",
     "summary_status": "TEXT NOT NULL DEFAULT 'none'",
     "status": "TEXT NOT NULL DEFAULT 'new'",
     "checksum": "TEXT",

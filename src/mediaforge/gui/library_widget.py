@@ -1,8 +1,9 @@
-"""Widok biblioteki: lista materiałów + filtry (tag/kategoria) + edycja metadanych + podgląd.
+"""Widok biblioteki: lista materiałów + filtry + edycja metadanych + podgląd + transkrypcja.
 
 Czyta materiały z SQLite (indeks), a edycja zapisuje ``metadata.json`` (źródło prawdy)
-i synchronizuje z SQLite (:meth:`RecordingStore.upsert_material`). Podgląd = miniatura
-z folderu materiału + „Otwórz folder". Bez własnych widgetów listy plików/logu.
+i synchronizuje z SQLite (:meth:`RecordingStore.upsert_material`). Import i transkrypcja
+idą przez kolejkę ``jobs`` (wątek roboczy, GPU serializowane) — GUI tylko **odpytuje**
+statusy ``QTimer``-em i streamuje je do ``LogView`` (bez sygnałów z wątków roboczych).
 """
 
 from __future__ import annotations
@@ -10,7 +11,8 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
+from chodzkos_gui_kit.qt.widgets import LogView
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -26,11 +28,22 @@ from PySide6.QtWidgets import (
 )
 
 from mediaforge.core import config as cfg_mod
+from mediaforge.core.ai.transcribe import WhisperCppBackend
+from mediaforge.core.engines.import_engine import ImporterEngine
+from mediaforge.core.jobs import JobQueue, JobStatus, JobStore
+from mediaforge.core.jobs.handlers import (
+    JOB_IMPORT,
+    JOB_TRANSCRIBE,
+    make_import_handler,
+    make_transcribe_handler,
+)
 from mediaforge.core.library.db import Database
 from mediaforge.core.library.material import MaterialMetadata, write_metadata
 from mediaforge.core.library.recordings import RecordingStore
 
 _ALL = "(wszystkie)"
+# Kolory statusów zadań w LogView (role palety — przeżywają zmianę motywu).
+_JOB_LEVEL_COLORS = {"running": "accent2", "done": "accent", "error": "red", "queued": "fg2"}
 
 
 def _fmt_duration(seconds: float | None) -> str:
@@ -45,12 +58,47 @@ class LibraryWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        Database(cfg_mod.library_db_path()).migrate()
-        self._store = RecordingStore(cfg_mod.library_db_path())
+        db_path = cfg_mod.library_db_path()
+        Database(db_path).migrate()
+        self._config = cfg_mod.load()
+        self._store = RecordingStore(db_path)
         self._materials: list[tuple[int, Path, MaterialMetadata]] = []
         self._current: tuple[int, Path, MaterialMetadata] | None = None
+
+        # Kolejka: import (linia I/O) + transkrypcja (linia GPU max_workers=1). Handlery
+        # rejestrujemy teraz, ale wątek roboczy startuje dopiero start_jobs() (testy go nie
+        # uruchamiają — sprawdzają samo kolejkowanie).
+        self._jobs_store = JobStore(db_path)
+        self._queue = JobQueue(self._jobs_store, lanes={JOB_TRANSCRIBE: 1, JOB_IMPORT: 2})
+        self._queue.register(JOB_IMPORT, make_import_handler(ImporterEngine(store=self._store)))
+        self._queue.register(JOB_TRANSCRIBE, make_transcribe_handler(self._store, self._backend()))
+        self._seen: dict[int, str] = {}
+        self._poll = QTimer(self)
+        self._poll.setInterval(800)
+        self._poll.timeout.connect(self._poll_jobs)
+
         self._build_ui()
         self.refresh_all()
+
+    def _backend(self) -> WhisperCppBackend:
+        """Backend whisper.cpp z configu (binarka/model/wątki) dla handlera transkrypcji."""
+        return WhisperCppBackend(
+            model=cfg_mod.get_whisper_model(self._config) or "",
+            whisper_cli=cfg_mod.get_whispercpp_path(self._config) or "whisper-cli",
+            threads=cfg_mod.get_whisper_threads(self._config),
+        )
+
+    # ── Cykl życia kolejki (start z okna głównego; nie w testach) ─────────────
+
+    def start_jobs(self) -> None:
+        """Uruchamia wątek roboczy kolejki i polling statusów (woła okno główne)."""
+        self._queue.start()
+        self._poll.start()
+
+    def shutdown(self) -> None:
+        """Zatrzymuje polling i wątek roboczy (woła closeEvent okna głównego)."""
+        self._poll.stop()
+        self._queue.stop()
 
     # ── Budowa UI ─────────────────────────────────────────────────────────────
 
@@ -89,6 +137,12 @@ class LibraryWidget(QWidget):
         splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, stretch=1)
 
+        # Strumień statusów zadań (import/transkrypcja) — zasilany pollingiem QTimer.
+        self._log = LogView(timestamps=True, level_colors=_JOB_LEVEL_COLORS)
+        self._log.setMinimumHeight(110)
+        self._log.setToolTip("Status zadań (import, transkrypcja)")
+        root.addWidget(self._log)
+
     def _build_details(self) -> QWidget:
         panel = QWidget()
         col = QVBoxLayout(panel)
@@ -120,6 +174,10 @@ class LibraryWidget(QWidget):
         self._save_btn = QPushButton("Zapisz metadane")
         self._save_btn.clicked.connect(self._on_save)
         actions.addWidget(self._save_btn)
+        self._transcribe_btn = QPushButton("Transkrybuj")
+        self._transcribe_btn.setToolTip("Dodaj transkrypcję (whisper.cpp) do kolejki")
+        self._transcribe_btn.clicked.connect(self._on_transcribe)
+        actions.addWidget(self._transcribe_btn)
         self._open_btn = QPushButton("Otwórz folder")
         self._open_btn.clicked.connect(self._open_folder)
         actions.addWidget(self._open_btn)
@@ -174,7 +232,8 @@ class LibraryWidget(QWidget):
     @staticmethod
     def _item_label(meta: MaterialMetadata) -> str:
         date = meta.created_at[:10] if meta.created_at else "—"
-        return f"{meta.title}  ·  {date}  ·  {_fmt_duration(meta.duration)}"
+        badge = "  ·  📝" if meta.transcript_status == "done" else ""
+        return f"{meta.title}  ·  {date}  ·  {_fmt_duration(meta.duration)}{badge}"
 
     # ── Wybór / podgląd ───────────────────────────────────────────────────────
 
@@ -237,13 +296,48 @@ class LibraryWidget(QWidget):
 
         dialog = ImportDialog(self)
         dialog.exec()
-        if dialog.imported_count:
-            self.refresh_all()
+        if dialog.enqueued_count:
+            self._log.append_line(f"Import: dodano {dialog.enqueued_count} do kolejki", "queued")
 
     def _on_rescan(self) -> None:
         """Odbudowuje indeks z folderów biblioteki (metadata.json = źródło prawdy)."""
         self._store.rescan(cfg_mod.default_recordings_dir())
         self.refresh_all()
+
+    def _on_transcribe(self) -> None:
+        """Kolejkuje transkrypcję bieżącego materiału (whisper.cpp na linii GPU)."""
+        if self._current is None:
+            return
+        if not cfg_mod.get_whisper_model(self._config):
+            self._log.append_line(
+                "Ustaw whisper_model w configu (sprawdź `doctor`) — brak modelu whisper.cpp.",
+                "error",
+            )
+            return
+        rec_id, _folder, meta = self._current
+        self._jobs_store.enqueue(JOB_TRANSCRIBE, recording_id=rec_id)
+        self._log.append_line(f"Transkrypcja w kolejce: {meta.title}", "queued")
+
+    # ── Polling statusów zadań (QTimer; bez sygnałów z wątków roboczych) ──────
+
+    def _poll_jobs(self) -> None:
+        """Odpytuje kolejkę; loguje przejścia statusów i odświeża listę po zakończeniu."""
+        completed = False
+        for job in self._jobs_store.list_jobs():
+            if self._seen.get(job.id) == job.status.value:
+                continue
+            self._seen[job.id] = job.status.value
+            label = f"{job.job_type} #{job.id}"
+            if job.status is JobStatus.RUNNING:
+                self._log.append_line(f"{label}: w toku…", "running")
+            elif job.status is JobStatus.DONE:
+                self._log.append_line(f"{label}: gotowe", "done")
+                completed = True
+            elif job.status is JobStatus.FAILED:
+                self._log.append_line(f"{label}: błąd — {job.error_message or ''}", "error")
+                completed = True
+        if completed:
+            self.refresh_all()
 
     def _set_details_enabled(self, enabled: bool) -> None:
         for widget in (
@@ -253,6 +347,7 @@ class LibraryWidget(QWidget):
             self._category,
             self._tags,
             self._save_btn,
+            self._transcribe_btn,
             self._open_btn,
         ):
             widget.setEnabled(enabled)

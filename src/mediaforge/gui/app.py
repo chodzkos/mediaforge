@@ -60,6 +60,7 @@ def main() -> int:
     window = MainWindow(theme_manager, cfg)
     theme_manager.attach_titlebar(window)
     window.show()
+    window.start_jobs()  # wątek roboczy kolejki + polling statusów (po pokazaniu okna)
 
     exit_code = app.exec()
     flush_timer.stop()

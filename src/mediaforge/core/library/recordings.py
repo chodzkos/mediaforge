@@ -91,6 +91,8 @@ def _row_to_metadata(row: Row, tags: list[str]) -> MaterialMetadata:
         audio_path=row["audio_path"],
         thumbnail_path=row["thumbnail_path"],
         transcript_status=str(row["transcript_status"]),
+        transcript_json=row["transcript_json"],
+        transcript_srt=row["transcript_srt"],
         summary_status=str(row["summary_status"]),
         status=str(row["status"]),
     )
@@ -206,6 +208,8 @@ class RecordingStore:
                 meta.audio_path,
                 meta.thumbnail_path,
                 meta.transcript_status,
+                meta.transcript_json,
+                meta.transcript_srt,
                 meta.summary_status,
                 meta.status,
             )
@@ -214,16 +218,17 @@ class RecordingStore:
                 conn.execute(
                     "UPDATE recordings SET title=?, source_type=?, source_url=?, presenter=?, "
                     "organizer=?, category=?, created_at=?, duration=?, folder=?, video_path=?, "
-                    "audio_path=?, thumbnail_path=?, transcript_status=?, summary_status=?, "
-                    "status=? WHERE id=?",
+                    "audio_path=?, thumbnail_path=?, transcript_status=?, transcript_json=?, "
+                    "transcript_srt=?, summary_status=?, status=? WHERE id=?",
                     (*values, rec_id),
                 )
             else:
                 cur = conn.execute(
                     "INSERT INTO recordings (title, source_type, source_url, presenter, organizer, "
                     "category, created_at, duration, folder, video_path, audio_path, "
-                    "thumbnail_path, transcript_status, summary_status, status) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "thumbnail_path, transcript_status, transcript_json, transcript_srt, "
+                    "summary_status, status) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     values,
                 )
                 rec_id = int(cur.lastrowid or 0)
@@ -241,6 +246,20 @@ class RecordingStore:
             if row is None:
                 return None
             return _row_to_metadata(row, _read_tags(conn, recording_id))
+        finally:
+            conn.close()
+
+    def get_material(self, recording_id: int) -> tuple[Path, MaterialMetadata] | None:
+        """Zwraca (folder, metadane) materiału po id — dla joba transkrypcji/edycji."""
+        conn = connect(self.path)
+        try:
+            row = conn.execute(
+                "SELECT * FROM recordings WHERE id = ? AND folder IS NOT NULL", (recording_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            folder = Path(str(row["folder"]))
+            return folder, _row_to_metadata(row, _read_tags(conn, recording_id))
         finally:
             conn.close()
 
