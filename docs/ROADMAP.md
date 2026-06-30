@@ -31,6 +31,8 @@ Szkielet pakietu (`core`/`gui`/`cli`), `pyproject` + uv, ruff/mypy/pytest, CI (W
 
 **Akceptacja:** import pliku tworzy kompletny folder + wpis; biblioteka filtruje po tagach/kategoriach; metadane edytowalne i trwałe; indeks SQLite odtwarzalny z `metadata.json` (rescan).
 
+> Znana decyzja: wpisy sprzed S2 z `folder=NULL` przeżywają samonaprawę schematu, ale są niewidoczne w bibliotece (filtr `folder IS NOT NULL`) — dane zachowane, do ewentualnego backfillu; nie bug.
+
 ## ☐ S3 — Transkrypcja
 **Gałąź:** `feat/s3-transcribe`
 
