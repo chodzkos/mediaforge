@@ -49,7 +49,10 @@ class MainWindow(QMainWindow):
         self._theme_manager = theme_manager
         self._config = config
         self.setWindowTitle("mediaforge")
+        # Minimum dobrane tak, by panel metadanych (rząd przycisków) mieścił się bez ściskania;
+        # resize to sensowny start (geometria z configu i tak nadpisze przy ponownym otwarciu).
         self.setMinimumSize(900, 600)
+        self.resize(1100, 760)
 
         self._build_ui()
         self._restore_geometry()

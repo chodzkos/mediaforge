@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -171,11 +172,15 @@ class LibraryWidget(QWidget):
         self._tags = QLineEdit()
         self._tags.setPlaceholderText("tagi po przecinku")
         form.addRow("Tagi:", self._tags)
+        col.addLayout(form)
+
+        # „Info" POZA formularzem: pełna szerokość + zawijanie pcha przyciski w dół, a nie
+        # je przykrywa (w QFormLayout zawinięta 2. linia nachodziła na rząd akcji).
         self._info = QLabel("")
         self._info.setWordWrap(True)
         self._info.setEnabled(False)
-        form.addRow("Info:", self._info)
-        col.addLayout(form)
+        self._info.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        col.addWidget(self._info)
 
         actions = QHBoxLayout()
         self._save_btn = QPushButton("Zapisz metadane")
