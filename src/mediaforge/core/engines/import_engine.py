@@ -65,6 +65,24 @@ def build_extract_audio_command(src: Path, out: Path, ffmpeg: str = "ffmpeg") ->
     ]
 
 
+def build_extract_wav_command(src: Path, out: Path, ffmpeg: str = "ffmpeg") -> list[str]:
+    """Komenda konwersji źródła → 16 kHz mono PCM WAV (wejście dla whisper.cpp)."""
+    return [
+        ffmpeg,
+        "-hide_banner",
+        "-y",
+        "-i",
+        str(src),
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-c:a",
+        "pcm_s16le",
+        str(out),
+    ]
+
+
 def build_thumbnail_command(
     src: Path, out: Path, *, at_seconds: float = 3.0, ffmpeg: str = "ffmpeg"
 ) -> list[str]:
