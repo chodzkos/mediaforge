@@ -6,6 +6,9 @@ projekt stosuje [Semantic Versioning](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+### Fixed
+- **Samonaprawiająca się migracja schematu (`ensure_schema`).** Baza sprzed S2 nie dostawała nowych kolumn (`recordings` rozszerzono w miejscu, a `migrate()` był no-op przy istniejącym `user_version`) → `list_materials()` żądał `r.folder` → `sqlite3.OperationalError: no such column` → GUI nie wstawało na maszynie ze starą bazą. Teraz `ensure_schema` (wołane w `RecordingStore.__init__` i z `migrate()`) dorabia brakujące kolumny przez `ALTER TABLE ADD COLUMN` — idempotentnie i **nie-destrukcyjnie** (zachowuje dane/indeks; świadomie NIE drop+recreate, bo baza może być na NAS-ie chwilowo offline). Jedno źródło prawdy dla kolumn `recordings` (CREATE i ALTER z tego samego dicta); `user_version` ostemplowany jako zaczep na przyszłe migracje nie-addytywne.
+
 ### Changed
 - Usunięto nieużywaną tabelę `settings` ze schematu SQLite (martwy kod z S0) — preferencje skalarne trzyma `config.json` (`core/config.py`), zgodnie z poprawionym ARCHITECTURE/PROMPTS. Schemat v1 edytowany w miejscu (nic nie shipnęło → bez migracji v1→v2).
 

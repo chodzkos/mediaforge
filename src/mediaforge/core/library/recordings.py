@@ -15,7 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from sqlite3 import Connection, Row
 
-from mediaforge.core.library.db import connect
+from mediaforge.core.library.db import connect, ensure_schema
 from mediaforge.core.library.material import MaterialMetadata, metadata_path, read_metadata
 
 
@@ -101,6 +101,9 @@ class RecordingStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        # Samonaprawa schematu przy starcie: stara baza (sprzed dołożenia kolumny) dostaje
+        # brakujące kolumny (ALTER ADD COLUMN), więc list_materials nie rzuci „no such column".
+        ensure_schema(path)
 
     # ── Szybki wpis nagrania (ścieżka rekordera) ──────────────────────────────
 
