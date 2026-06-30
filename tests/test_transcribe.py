@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from mediaforge.core.ai.transcribe import (
+    LineCb,
     RunResult,
     TranscribeOptions,
     WhisperCppBackend,
@@ -13,6 +14,7 @@ from mediaforge.core.ai.transcribe import (
     build_whisper_command,
     detect_whisper_runtime,
     parse_whisper_json,
+    parse_whisper_progress,
     whisper_backend_from_output,
 )
 from mediaforge.core.engines.import_engine import build_extract_wav_command
@@ -96,7 +98,7 @@ def test_whispercpp_backend_orchestration(tmp_path: Path) -> None:
     out_dir = tmp_path / "material"
     commands: list[list[str]] = []
 
-    def fake_runner(cmd: list[str]) -> RunResult:
+    def fake_runner(cmd: list[str], on_line: LineCb | None = None) -> RunResult:
         commands.append(cmd)
         if "-of" in cmd:  # przebieg whisper-cli → zapisz pliki wyjściowe + log CUDA
             prefix = cmd[cmd.index("-of") + 1]
@@ -128,7 +130,7 @@ def test_silence_command_generates_16k_mono() -> None:
 
 
 def test_detect_runtime_cuda() -> None:
-    def fake(cmd: list[str]) -> RunResult:
+    def fake(cmd: list[str], on_line: LineCb | None = None) -> RunResult:
         if "anullsrc=r=16000:cl=mono" in cmd:  # cisza → utwórz wav, by sonda szła dalej
             Path(cmd[-1]).write_bytes(b"RIFF")
             return RunResult(0, "")
@@ -138,7 +140,7 @@ def test_detect_runtime_cuda() -> None:
 
 
 def test_detect_runtime_cpu() -> None:
-    def fake(cmd: list[str]) -> RunResult:
+    def fake(cmd: list[str], on_line: LineCb | None = None) -> RunResult:
         if "anullsrc=r=16000:cl=mono" in cmd:
             Path(cmd[-1]).write_bytes(b"RIFF")
             return RunResult(0, "")
@@ -149,7 +151,7 @@ def test_detect_runtime_cpu() -> None:
 
 def test_detect_runtime_unknown_without_model() -> None:
     # Bez modelu nie odpalamy whisper (runner nie jest wołany) → unknown (degraded).
-    def boom(cmd: list[str]) -> RunResult:
+    def boom(cmd: list[str], on_line: LineCb | None = None) -> RunResult:
         raise AssertionError("runner nie powinien być wołany bez modelu")
 
     assert detect_whisper_runtime("whisper-cli", None, runner=boom) == "unknown"
@@ -157,7 +159,57 @@ def test_detect_runtime_unknown_without_model() -> None:
 
 
 def test_detect_runtime_unknown_when_wav_fails() -> None:
-    def fake(cmd: list[str]) -> RunResult:
+    def fake(cmd: list[str], on_line: LineCb | None = None) -> RunResult:
         return RunResult(1, "")  # nie tworzy wav → sonda nie ma czego transkrybować
 
     assert detect_whisper_runtime("whisper-cli", "/m/model.bin", runner=fake) == "unknown"
+
+
+# ── Postęp transkrypcji (procent) ─────────────────────────────────────────────
+
+
+def test_parse_whisper_progress() -> None:
+    assert parse_whisper_progress("whisper_print_progress_callback: progress = 45%") == 45
+    assert parse_whisper_progress("progress =  0%") == 0
+    assert parse_whisper_progress("progress = 100%") == 100
+    assert parse_whisper_progress("whisper_full: jakaś inna linia") is None
+    assert parse_whisper_progress("progress = 150%") == 100  # clamp
+
+
+def test_whisper_command_has_print_progress() -> None:
+    assert "--print-progress" in build_whisper_command("m", Path("a.wav"), Path("base"))
+
+
+def test_backend_streams_progress_with_throttle(tmp_path: Path) -> None:
+    """on_progress woła się tylko przy ZMIANIE procentu; backend nadal z pełnego buforu."""
+    src = tmp_path / "lecture.mp4"
+    src.write_bytes(b"x")
+    out_dir = tmp_path / "material"
+    # Sekwencja linii whisper-cli: powtórzone 0% i 50% (test throttle) + log CUDA na końcu.
+    progress_lines = [
+        "progress = 0%\n",
+        "progress = 0%\n",
+        "progress = 10%\n",
+        "progress = 50%\n",
+        "progress = 50%\n",
+        "progress = 100%\n",
+        "whisper_backend_init_gpu: using CUDA0 backend\n",
+    ]
+
+    def fake_runner(cmd: list[str], on_line: LineCb | None = None) -> RunResult:
+        if "-of" not in cmd:
+            return RunResult(0, "")  # konwersja WAV
+        full = "".join(progress_lines)
+        if on_line is not None:
+            for line in progress_lines:
+                on_line(line)
+        prefix = cmd[cmd.index("-of") + 1]
+        Path(prefix + ".json").write_text(json.dumps(_SAMPLE_JSON), encoding="utf-8")
+        return RunResult(0, full)
+
+    seen: list[int] = []
+    backend = WhisperCppBackend(model="/m/medium.bin", runner=fake_runner)
+    result = backend.transcribe(src, out_dir, TranscribeOptions(), on_progress=seen.append)
+
+    assert seen == [0, 10, 50, 100]  # throttle: bez powtórzeń
+    assert result.runtime == "cuda"  # backend z PEŁNEGO buforu (mimo strumieniowania)

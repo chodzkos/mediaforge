@@ -84,7 +84,12 @@ class TranscriptionBackend(Protocol):
     name: str
 
     def transcribe(
-        self, source: Path, out_dir: Path, opts: TranscribeOptions
+        self,
+        source: Path,
+        out_dir: Path,
+        opts: TranscribeOptions,
+        *,
+        on_progress: Callable[[int], None] | None = None,
     ) -> TranscriptionResult: ...
 
 
@@ -193,6 +198,7 @@ def build_whisper_command(
         str(wav),
         "-l",
         language,
+        "--print-progress",  # emituje „progress = N%" na stderr (do paska postępu)
         "--output-json",
         "--output-srt",
         "-of",
@@ -203,6 +209,17 @@ def build_whisper_command(
     if beam_size:
         cmd += ["-bs", str(beam_size)]
     return cmd
+
+
+_PROGRESS_RE = re.compile(r"progress\s*=\s*(\d+)\s*%")
+
+
+def parse_whisper_progress(line: str) -> int | None:
+    """Wyciąga procent (0-100) z linii postępu whisper-cli, albo None gdy to nie ta linia."""
+    match = _PROGRESS_RE.search(line)
+    if not match:
+        return None
+    return max(0, min(100, int(match.group(1))))
 
 
 def parse_whisper_json(data: dict[str, Any], *, model: str = "") -> Transcript:
@@ -236,17 +253,36 @@ class RunResult:
     stderr: str
 
 
-Runner = Callable[[list[str]], RunResult]
+LineCb = Callable[[str], None]
 
 
-def _default_runner(command: list[str]) -> RunResult:
+class Runner(Protocol):
+    """Uruchamia proces; opcjonalnie strumieniuje stderr linia po linii do ``on_line``."""
+
+    def __call__(self, command: list[str], on_line: LineCb | None = None, /) -> RunResult: ...
+
+
+def _default_runner(command: list[str], on_line: LineCb | None = None) -> RunResult:
+    """Popen ze strumieniowaniem stderr: woła ``on_line`` na bieżąco (np. „progress = N%")
+    i akumuluje pełny bufor, który zwraca — pełny stderr zostaje do detekcji backendu."""
     try:
-        proc = subprocess.run(
-            command, capture_output=True, text=True, creationflags=_NO_WINDOW, check=False
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            creationflags=_NO_WINDOW,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError) as exc:
         return RunResult(returncode=1, stderr=str(exc))
-    return RunResult(returncode=proc.returncode, stderr=proc.stderr or "")
+    lines: list[str] = []
+    if proc.stderr is not None:
+        for line in proc.stderr:
+            lines.append(line)
+            if on_line is not None:
+                on_line(line)
+    proc.wait()
+    return RunResult(returncode=proc.returncode, stderr="".join(lines))
 
 
 @dataclass(slots=True)
@@ -265,15 +301,35 @@ class WhisperCppBackend:
     name: str = "whispercpp"
 
     def transcribe(
-        self, source: Path, out_dir: Path, opts: TranscribeOptions
+        self,
+        source: Path,
+        out_dir: Path,
+        opts: TranscribeOptions,
+        *,
+        on_progress: Callable[[int], None] | None = None,
     ) -> TranscriptionResult:
-        """Konwersja → transkrypcja; zapisuje .json/.srt do ``out_dir`` (folder materiału)."""
+        """Konwersja → transkrypcja; zapisuje .json/.srt do ``out_dir`` (folder materiału).
+
+        ``on_progress(pct)`` woła się przy ZMIANIE procentu (throttle) — strumieniowane ze
+        stderr whisper-cli (``--print-progress``). Backend (cuda/cpu) wykrywany z pełnego buforu.
+        """
         out_dir.mkdir(parents=True, exist_ok=True)
         wav = out_dir / "audio16k.wav"
         self.runner(build_extract_wav_command(source, wav, self.ffmpeg))
 
         language = opts.language or "auto"
         out_prefix = out_dir / source.stem
+        last_pct = -1
+
+        def on_line(line: str) -> None:
+            nonlocal last_pct
+            if on_progress is None:
+                return
+            pct = parse_whisper_progress(line)
+            if pct is not None and pct != last_pct:  # throttle: tylko przy zmianie
+                last_pct = pct
+                on_progress(pct)
+
         run = self.runner(
             build_whisper_command(
                 self.model,
@@ -282,7 +338,8 @@ class WhisperCppBackend:
                 language=language,
                 threads=self.threads,
                 whisper_cli=self.whisper_cli,
-            )
+            ),
+            on_line if on_progress is not None else None,
         )
         runtime = whisper_backend_from_output(run.stderr)
 

@@ -7,6 +7,7 @@ projekt stosuje [Semantic Versioning](https://semver.org/lang/pl/).
 ## [Unreleased]
 
 ### Added
+- **Postęp transkrypcji w procentach (follow-up S3).** whisper-cli z `--print-progress`, stderr strumieniowany linia po linii (Popen) i parsowany (`parse_whisper_progress`) → `jobs.progress` (0..1, throttle: tylko przy zmianie %); GUI pokazuje „Transkrypcja… N%" zamiast samego „running" (długi wykład nie wygląda na zawieszony). Status-only progres z S3 **zastąpiony procentem**; reużyto istniejącej kolumny `jobs.progress` (bez nowej). Backend (cuda/cpu) nadal z pełnego buforu stderr.
 - **S3 — Transkrypcja na kolejce `jobs` (whisper.cpp, CUDA, torch-free).**
   - **`core/jobs`** — linie (lanes) w `JobQueue`: transkrypcja na linii GPU `max_workers=1` (jeden model w VRAM naraz), import na osobnej linii I/O; `handlers.py` (transkrypcja/import jako joby, Qt-free, testowalne synchronicznym executorem).
   - **`core/ai/transcribe.py`** — `WhisperCppBackend` (ffmpeg → 16 kHz mono WAV → whisper-cli), czyste buildery + `parse_whisper_json`; `whisper_backend_from_output` (EMPIRYCZNA detekcja runtime z logu — znosi próg sm_75/cu130). Config: `whisper_model`/`whisper_language`/`whisper_threads`. Tor HF (insanely-fast-whisper) odroczony (Protocol + brak implementacji).

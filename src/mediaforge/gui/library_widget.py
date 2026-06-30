@@ -139,6 +139,11 @@ class LibraryWidget(QWidget):
         splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, stretch=1)
 
+        # Procent aktywnej transkrypcji (linia GPU serializuje → co najwyżej jedna naraz).
+        self._job_status = QLabel("")
+        self._job_status.setEnabled(False)
+        root.addWidget(self._job_status)
+
         # Strumień statusów zadań (import/transkrypcja) — zasilany pollingiem QTimer.
         self._log = LogView(timestamps=True, level_colors=_JOB_LEVEL_COLORS)
         self._log.setMinimumHeight(110)
@@ -323,9 +328,12 @@ class LibraryWidget(QWidget):
     # ── Polling statusów zadań (QTimer; bez sygnałów z wątków roboczych) ──────
 
     def _poll_jobs(self) -> None:
-        """Odpytuje kolejkę; loguje przejścia statusów i odświeża listę po zakończeniu."""
+        """Odpytuje kolejkę; loguje przejścia statusów, pokazuje % transkrypcji, odświeża listę."""
         completed = False
+        running_transcribe = None
         for job in self._jobs_store.list_jobs():
+            if job.job_type == JOB_TRANSCRIBE and job.status is JobStatus.RUNNING:
+                running_transcribe = job
             if self._seen.get(job.id) == job.status.value:
                 continue
             self._seen[job.id] = job.status.value
@@ -338,6 +346,11 @@ class LibraryWidget(QWidget):
             elif job.status is JobStatus.FAILED:
                 self._log.append_line(f"{label}: błąd — {job.error_message or ''}", "error")
                 completed = True
+        # Procent zamiast samego „running" — żeby długi wykład nie wyglądał na zawieszony.
+        if running_transcribe is not None:
+            self._job_status.setText(f"Transkrypcja… {int(running_transcribe.progress * 100)}%")
+        else:
+            self._job_status.setText("")
         if completed:
             self.refresh_all()
 
