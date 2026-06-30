@@ -19,6 +19,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
@@ -40,6 +41,7 @@ from mediaforge.core.engines.ffmpeg_cmd import (
     build_record_command,
     estimate_size_mb,
 )
+from mediaforge.core.library.material import MaterialMetadata, write_metadata
 from mediaforge.core.library.recordings import RecordingStatus, RecordingStore
 
 # Flaga ukrywająca okno konsoli przy subprocess na Windows (jak w core/detection/tools.py).
@@ -335,15 +337,19 @@ class RecorderEngine:
         audio_path = output if is_audio else None
         duration = round(session.elapsed_seconds, 1)
 
+        # Ten sam układ co import: metadata.json (źródło prawdy) + wpis w SQLite.
+        meta = MaterialMetadata(
+            title=title,
+            created_at=datetime.now(UTC).isoformat(),
+            source_type="screen",
+            duration=duration,
+            video_path=None if is_audio else output.name,
+            audio_path=output.name if is_audio else None,
+            status=RecordingStatus.RECORDED.value,
+        )
+        write_metadata(material_dir, meta)
         if self.store is not None:
-            self.store.create(
-                title,
-                source_type="screen",
-                status=RecordingStatus.RECORDED,
-                duration=duration,
-                video_path=video_path,
-                audio_path=audio_path,
-            )
+            self.store.upsert_material(material_dir, meta)
         return MediaArtifact(
             video_path=video_path,
             audio_path=audio_path,

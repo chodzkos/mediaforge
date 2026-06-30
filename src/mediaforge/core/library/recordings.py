@@ -1,9 +1,10 @@
-"""Magazyn nagrań nad tabelą ``recordings`` (wpis materiału + statusy).
+"""Magazyn nagrań nad tabelą ``recordings`` (indeks materiałów + statusy).
 
 Czysty ``sqlite3`` (bez Qt), krótkożyciowe połączenia przez
-:func:`core.library.db.connect` — bezpieczny wątkowo, jak :mod:`core.jobs.store`.
-Schemat tabeli tworzy migracja biblioteki (:mod:`core.library.db`). Folder materiału
-(„jeden materiał = jeden folder") jest źródłem prawdy; tabela to indeks nad nim.
+:func:`core.library.db.connect`. Folder materiału z ``metadata.json``
+(:mod:`core.library.material`) jest **źródłem prawdy**; ta tabela to indeks nad nim —
+:meth:`RecordingStore.upsert_material` synchronizuje metadane do SQLite (lista/filtry),
+a :meth:`RecordingStore.to_metadata` czyta je z powrotem (round-trip folder ↔ SQLite).
 """
 
 from __future__ import annotations
@@ -12,9 +13,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from sqlite3 import Row
+from sqlite3 import Connection, Row
 
 from mediaforge.core.library.db import connect
+from mediaforge.core.library.material import MaterialMetadata, metadata_path, read_metadata
 
 
 class RecordingStatus(StrEnum):
@@ -59,11 +61,48 @@ def _row_to_recording(row: Row) -> Recording:
     )
 
 
+def _read_tags(conn: Connection, recording_id: int) -> list[str]:
+    rows = conn.execute(
+        "SELECT tag FROM tags WHERE recording_id = ? ORDER BY tag", (recording_id,)
+    ).fetchall()
+    return [str(r["tag"]) for r in rows]
+
+
+def _write_tags(conn: Connection, recording_id: int, tags: list[str]) -> None:
+    conn.execute("DELETE FROM tags WHERE recording_id = ?", (recording_id,))
+    conn.executemany(
+        "INSERT INTO tags (recording_id, tag) VALUES (?, ?)",
+        [(recording_id, t) for t in sorted({t.strip() for t in tags if t.strip()})],
+    )
+
+
+def _row_to_metadata(row: Row, tags: list[str]) -> MaterialMetadata:
+    return MaterialMetadata(
+        title=str(row["title"]),
+        created_at=str(row["created_at"]),
+        source_type=str(row["source_type"]),
+        source_url=row["source_url"],
+        presenter=row["presenter"],
+        organizer=row["organizer"],
+        category=row["category"],
+        tags=tags,
+        duration=row["duration"],
+        video_path=row["video_path"],
+        audio_path=row["audio_path"],
+        thumbnail_path=row["thumbnail_path"],
+        transcript_status=str(row["transcript_status"]),
+        summary_status=str(row["summary_status"]),
+        status=str(row["status"]),
+    )
+
+
 class RecordingStore:
-    """CRUD dla tabeli ``recordings`` (tworzenie wpisu, aktualizacja statusu/ścieżek)."""
+    """CRUD dla tabeli ``recordings`` + synchronizacja materiałów (metadata.json ↔ SQLite)."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
+
+    # ── Szybki wpis nagrania (ścieżka rekordera) ──────────────────────────────
 
     def create(
         self,
@@ -132,5 +171,188 @@ class RecordingStore:
                     (status.value,),
                 ).fetchall()
             return [_row_to_recording(r) for r in rows]
+        finally:
+            conn.close()
+
+    # ── Synchronizacja materiału (metadata.json ↔ SQLite) ─────────────────────
+
+    def upsert_material(self, folder: Path, meta: MaterialMetadata) -> int:
+        """Wstawia/aktualizuje wiersz materiału wg ``folder`` + synchronizuje tagi.
+
+        ``folder`` (katalog materiału z ``metadata.json``) jest kluczem tożsamości —
+        ponowny zapis tych samych metadanych aktualizuje wiersz, nie duplikuje go.
+        Zwraca id wiersza.
+        """
+        folder_str = str(folder)
+        conn = connect(self.path)
+        try:
+            existing = conn.execute(
+                "SELECT id FROM recordings WHERE folder = ?", (folder_str,)
+            ).fetchone()
+            values = (
+                meta.title,
+                meta.source_type,
+                meta.source_url,
+                meta.presenter,
+                meta.organizer,
+                meta.category,
+                meta.created_at or _now(),
+                meta.duration,
+                folder_str,
+                meta.video_path,
+                meta.audio_path,
+                meta.thumbnail_path,
+                meta.transcript_status,
+                meta.summary_status,
+                meta.status,
+            )
+            if existing is not None:
+                rec_id = int(existing["id"])
+                conn.execute(
+                    "UPDATE recordings SET title=?, source_type=?, source_url=?, presenter=?, "
+                    "organizer=?, category=?, created_at=?, duration=?, folder=?, video_path=?, "
+                    "audio_path=?, thumbnail_path=?, transcript_status=?, summary_status=?, "
+                    "status=? WHERE id=?",
+                    (*values, rec_id),
+                )
+            else:
+                cur = conn.execute(
+                    "INSERT INTO recordings (title, source_type, source_url, presenter, organizer, "
+                    "category, created_at, duration, folder, video_path, audio_path, "
+                    "thumbnail_path, transcript_status, summary_status, status) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    values,
+                )
+                rec_id = int(cur.lastrowid or 0)
+            _write_tags(conn, rec_id, meta.tags)
+            conn.commit()
+            return rec_id
+        finally:
+            conn.close()
+
+    def to_metadata(self, recording_id: int) -> MaterialMetadata | None:
+        """Czyta wiersz materiału z SQLite z powrotem do :class:`MaterialMetadata`."""
+        conn = connect(self.path)
+        try:
+            row = conn.execute("SELECT * FROM recordings WHERE id = ?", (recording_id,)).fetchone()
+            if row is None:
+                return None
+            return _row_to_metadata(row, _read_tags(conn, recording_id))
+        finally:
+            conn.close()
+
+    def list_materials(
+        self, *, tag: str | None = None, category: str | None = None
+    ) -> list[tuple[int, Path, MaterialMetadata]]:
+        """Materiały (id, folder, metadane) z opcjonalnym filtrem po tagu/kategorii.
+
+        Zwraca tylko materiały z folderem (``metadata.json`` jako źródłem prawdy);
+        najnowsze pierwsze. Folder jest potrzebny GUI do edycji/zapisu metadanych.
+        """
+        conn = connect(self.path)
+        try:
+            join = ""
+            clauses = ["r.folder IS NOT NULL"]
+            params: list[object] = []
+            if tag is not None:
+                join = " JOIN tags t ON t.recording_id = r.id AND t.tag = ?"
+                params.append(tag)
+            if category is not None:
+                clauses.append("r.category = ?")
+                params.append(category)
+            query = (
+                f"SELECT DISTINCT r.* FROM recordings r{join} "
+                f"WHERE {' AND '.join(clauses)} ORDER BY r.id DESC"
+            )
+            rows = conn.execute(query, params).fetchall()
+            return [
+                (
+                    int(r["id"]),
+                    Path(str(r["folder"])),
+                    _row_to_metadata(r, _read_tags(conn, int(r["id"]))),
+                )
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    def all_tags(self) -> list[str]:
+        """Wszystkie tagi w bibliotece (unikalne, posortowane) — do filtra."""
+        conn = connect(self.path)
+        try:
+            rows = conn.execute("SELECT DISTINCT tag FROM tags ORDER BY tag").fetchall()
+            return [str(r["tag"]) for r in rows]
+        finally:
+            conn.close()
+
+    def all_categories(self) -> list[str]:
+        """Wszystkie kategorie w bibliotece (unikalne, posortowane) — do filtra."""
+        conn = connect(self.path)
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT category FROM recordings "
+                "WHERE category IS NOT NULL AND category <> '' ORDER BY category"
+            ).fetchall()
+            return [str(r["category"]) for r in rows]
+        finally:
+            conn.close()
+
+    def rescan(self, library_root: Path, *, prune: bool = True) -> int:
+        """Odbudowuje/synchronizuje indeks SQLite z ``metadata.json`` w podfolderach biblioteki.
+
+        Czyni „folder = źródło prawdy" realnym: indeks da się odtworzyć z dysku po skasowaniu
+        bazy, po przeniesieniu biblioteki na inną maszynę albo po ręcznej edycji ``metadata.json``.
+        Iteruje podkatalogi ``library_root``, dla każdego z ``metadata.json`` robi upsert.
+        Gdy ``prune`` — usuwa z indeksu materiały, których folder zniknął z dysku.
+        Zwraca liczbę zindeksowanych materiałów.
+
+        Bezpieczeństwo prune (biblioteka na NAS-ie/sieci): NIE prunuje, gdy ``library_root``
+        nie da się wylistować (offline/brak dostępu) ANI gdy skan wyszedł pusty przy niepustym
+        indeksie — to sygnał „root niedostępny", nie „wszystko usunięte". Inaczej jeden klik
+        przy chwilowo nieosiągalnym NAS-ie wymazałby cały indeks.
+        """
+        try:
+            children = sorted(library_root.iterdir())
+            listed = True
+        except OSError:
+            children, listed = [], False  # root niedostępny (np. NAS offline) — nie listujemy
+        count = 0
+        for child in children:
+            if not (child.is_dir() and metadata_path(child).is_file()):
+                continue
+            try:
+                meta = read_metadata(child)
+            except (OSError, ValueError):
+                continue  # uszkodzony metadata.json — pomiń, nie wywalaj całego skanu
+            self.upsert_material(child, meta)
+            count += 1
+        suspicious_empty = count == 0 and self._material_count() > 0
+        if prune and listed and not suspicious_empty:
+            self._prune_missing_folders()
+        return count
+
+    def _material_count(self) -> int:
+        """Liczba materiałów w indeksie (wierszy z folderem) — guard prune."""
+        conn = connect(self.path)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM recordings WHERE folder IS NOT NULL"
+            ).fetchone()
+            return int(row["n"])
+        finally:
+            conn.close()
+
+    def _prune_missing_folders(self) -> None:
+        """Usuwa z indeksu materiały, których folder zniknął z dysku (kaskada na tagi itd.)."""
+        conn = connect(self.path)
+        try:
+            rows = conn.execute(
+                "SELECT id, folder FROM recordings WHERE folder IS NOT NULL"
+            ).fetchall()
+            for row in rows:
+                folder = str(row["folder"])
+                if folder and not Path(folder).exists():
+                    conn.execute("DELETE FROM recordings WHERE id = ?", (int(row["id"]),))
+            conn.commit()
         finally:
             conn.close()

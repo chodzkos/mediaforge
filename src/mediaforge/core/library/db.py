@@ -51,17 +51,23 @@ def _transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 _MIGRATION_V1 = """
 CREATE TABLE recordings (
     id            INTEGER PRIMARY KEY,
-    title         TEXT NOT NULL,
-    source_type   TEXT NOT NULL,
-    source_url    TEXT,
-    category      TEXT,
-    created_at    TEXT NOT NULL,
-    duration      REAL,
-    video_path    TEXT,
-    audio_path    TEXT,
-    status        TEXT NOT NULL DEFAULT 'new',
-    checksum      TEXT,
-    legal_note    TEXT
+    title             TEXT NOT NULL,
+    source_type       TEXT NOT NULL,
+    source_url        TEXT,
+    presenter         TEXT,
+    organizer         TEXT,
+    category          TEXT,
+    created_at        TEXT NOT NULL,
+    duration          REAL,
+    folder            TEXT,
+    video_path        TEXT,
+    audio_path        TEXT,
+    thumbnail_path    TEXT,
+    transcript_status TEXT NOT NULL DEFAULT 'none',
+    summary_status    TEXT NOT NULL DEFAULT 'none',
+    status            TEXT NOT NULL DEFAULT 'new',
+    checksum          TEXT,
+    legal_note        TEXT
 );
 
 CREATE TABLE jobs (

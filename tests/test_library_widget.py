@@ -1,0 +1,93 @@
+"""Widok biblioteki (pytest-qt, offscreen): lista, filtr, edycja metadanych → trwałość."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from PySide6.QtWidgets import QApplication
+from pytestqt.qtbot import QtBot
+
+from mediaforge.core import config as cfg_mod
+from mediaforge.core.library.db import Database
+from mediaforge.core.library.material import MaterialMetadata, read_metadata, write_metadata
+from mediaforge.core.library.recordings import RecordingStore
+from mediaforge.gui.import_dialog import ImportDialog
+from mediaforge.gui.library_widget import LibraryWidget
+
+
+def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    db = tmp_path / "library.sqlite3"
+    monkeypatch.setattr(cfg_mod, "library_db_path", lambda: db)
+    monkeypatch.setattr(cfg_mod, "default_recordings_dir", lambda: tmp_path / "lib")
+    Database(db).migrate()
+    return db
+
+
+def _seed(db: Path, tmp_path: Path, title: str, *, category: str, tags: list[str]) -> Path:
+    folder = tmp_path / "lib" / title
+    meta = MaterialMetadata(
+        title=title,
+        created_at="2026-06-30T10:00:00+00:00",
+        category=category,
+        tags=tags,
+        duration=61.0,
+    )
+    write_metadata(folder, meta)
+    RecordingStore(db).upsert_material(folder, meta)
+    return folder
+
+
+def test_library_lists_and_edits_persist(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = _isolate(monkeypatch, tmp_path)
+    folder = _seed(db, tmp_path, "Wykład", category="Sieci", tags=["tcp"])
+
+    widget = LibraryWidget()
+    qtbot.addWidget(widget)
+
+    assert widget._list.count() == 1
+    widget._list.setCurrentRow(0)
+    assert widget._title.text() == "Wykład"
+
+    # Edycja metadanych → zapis do metadata.json (źródło prawdy) + SQLite.
+    widget._title.setText("Wykład o BGP")
+    widget._presenter.setText("dr Nowak")
+    widget._tags.setText("tcp, bgp")
+    widget._on_save()
+
+    saved = read_metadata(folder)
+    assert saved.title == "Wykład o BGP"
+    assert saved.presenter == "dr Nowak"
+    assert saved.tags == ["bgp", "tcp"]
+    # Indeks SQLite zsynchronizowany.
+    assert RecordingStore(db).list_materials()[0][2] == saved
+
+
+def test_library_filters_by_category(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = _isolate(monkeypatch, tmp_path)
+    _seed(db, tmp_path, "A", category="Sieci", tags=["tcp"])
+    _seed(db, tmp_path, "B", category="AI", tags=["llm"])
+
+    widget = LibraryWidget()
+    qtbot.addWidget(widget)
+    assert widget._list.count() == 2
+
+    idx = widget._cat_filter.findText("AI")
+    widget._cat_filter.setCurrentIndex(idx)
+    assert widget._list.count() == 1
+
+
+def test_import_dialog_constructs(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _isolate(monkeypatch, tmp_path)
+    dialog = ImportDialog()
+    qtbot.addWidget(dialog)
+    assert dialog.imported_count == 0
+    # Bez plików import nie kończy dialogu (loguje ostrzeżenie).
+    dialog._on_import()
+    assert dialog.imported_count == 0
