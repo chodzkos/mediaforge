@@ -4,10 +4,11 @@ Wydzielone od orkiestracji (:mod:`.recorder`), żeby budowanie komend było w pe
 testowalne bez uruchamiania FFmpeg ani bycia na Windows. Funkcje są deterministyczne:
 te same wejścia → ta sama lista argumentów.
 
-Cel platformowy to Windows (nagrywanie): wideo przez ``gdigrab`` (cały pulpit /
-region / okno po tytule), audio przez ``dshow`` (urządzenie WASAPI loopback dla
-dźwięku systemowego oraz mikrofon). Wybór monitora realizuje GUI, podając region w
-pikselach fizycznych (DPI-aware) — tu monitor = region.
+Cel platformowy to Windows (nagrywanie): wideo przez ``ddagrab`` (Desktop Duplication
+API, D3D11, GPU — jak OBS; ``gdigrab``/GDI gubił klatki przy pełnoekranowym wideo bo
+jest CPU-bound), audio przez ``dshow`` (urządzenie WASAPI loopback dla dźwięku
+systemowego oraz mikrofon). Wybór monitora = ``output_idx`` ddagrab (hook pod hybrydę
+iGPU+dGPU; ddagrab łapie cały output — pod-region i okno po tytule nie są wspierane).
 
 NVENC (HEVC/AV1) z fallbackiem programowym: :func:`select_video_encoder` schodzi po
 łańcuchu preferencji do pierwszego enkodera obecnego w buildzie FFmpeg
@@ -152,17 +153,22 @@ def select_video_encoder(preferred_codec: str, encoders: Mapping[str, bool]) -> 
 
 
 def _video_input_args(source: CaptureSource, fps: int) -> list[str]:
-    """Argumenty wejścia wideo dla ``gdigrab`` (okno po tytule albo pulpit/region)."""
-    args = ["-f", "gdigrab", "-framerate", str(fps)]
-    if source.mode is CaptureMode.WINDOW and source.window_title:
-        args += ["-i", f"title={source.window_title}"]
-        return args
-    region = source.region
-    if source.mode is CaptureMode.REGION and region is not None:
-        x, y, w, h = region
-        args += ["-offset_x", str(x), "-offset_y", str(y), "-video_size", f"{w}x{h}"]
-    args += ["-i", "desktop"]
-    return args
+    """Argumenty wejścia wideo dla ``ddagrab`` (Desktop Duplication API, GPU).
+
+    Łapie cały OUTPUT (monitor) wskazany przez ``output_idx`` = ``source.monitor`` (hook
+    konfiguracyjny pod hybrydę iGPU+dGPU; domyślnie 0). ddagrab oddaje tekstury D3D11 —
+    pobranie do pamięci systemowej (``hwdownload``) robi filtr w :func:`build_record_command`.
+    Pod-region (``region``) i okno po tytule nie są wspierane przez ddagrab → łapiemy monitor.
+    ``-use_wallclock_as_timestamps`` stabilizuje PTS przy długim nagraniu.
+    """
+    return [
+        "-use_wallclock_as_timestamps",
+        "1",
+        "-f",
+        "lavfi",
+        "-i",
+        f"ddagrab=output_idx={source.monitor}:framerate={fps}",
+    ]
 
 
 def _audio_devices(audio: AudioConfig) -> list[str]:
@@ -210,7 +216,7 @@ def build_record_command(
     cmd: list[str] = [ffmpeg, "-hide_banner", "-y"]
 
     if not audio_only:
-        cmd += _video_input_args(source, quality.fps or 30)
+        cmd += _video_input_args(source, quality.fps or 60)  # 60 fps domyślnie (niskie = skokowo)
     for device in devices:
         cmd += ["-f", "dshow", "-i", f"audio={device}"]
 
@@ -234,13 +240,15 @@ def build_record_command(
 
     # Kodek wideo (NVENC z fallbackiem) + bitrate.
     if not audio_only:
+        # ddagrab oddaje tekstury GPU → pobierz do RAM i ustaw format, inaczej enkoder odrzuci.
+        cmd += ["-vf", "hwdownload,format=bgra,format=yuv420p"]
         choice = select_video_encoder(quality.video_codec or "h264", encoders)
         cmd += ["-c:v", choice.name]
         if choice.hardware:
-            cmd += ["-preset", "p5"]  # zbalansowany preset NVENC
+            cmd += ["-preset", "p5", "-tune", "hq"]  # NVENC realtime-zdolny, jakość
         if quality.bitrate_kbps:
             cmd += ["-b:v", f"{quality.bitrate_kbps}k"]
-        cmd += ["-pix_fmt", "yuv420p"]
+        cmd += ["-fps_mode", "cfr"]  # stały framerate → koniec skokowości w pliku
 
     # Kodek audio.
     if devices:

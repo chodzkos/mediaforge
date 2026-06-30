@@ -5,8 +5,9 @@ statusami nagrywania przez ``level_colors``) — bez własnych widgetów ścież
 logika nagrywania (FFmpeg, segmentacja, odzysk) jest w ``core`` (Qt-free); tu zostaje
 zbieranie opcji, timer/rozmiar przez ``QTimer`` i sterowanie sesją (Start/Pauza/Stop).
 
-Wybór monitora jest DPI-aware: geometria ``QScreen`` przeliczana na piksele fizyczne
-(x ``devicePixelRatio``), bo ``gdigrab`` operuje na pikselach fizycznych pulpitu.
+Wybór monitora trafia jako ``output_idx`` do ``ddagrab`` (capture per-output). Geometria
+``QScreen`` w pikselach fizycznych (x ``devicePixelRatio``) służy do podglądu/rozmiaru
+i trybu „Region" (ddagrab łapie cały monitor — pod-region nie jest egzekwowany).
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ _MODE_LABELS: list[tuple[str, CaptureMode]] = [
 
 
 def _physical_geometry(screen: QScreen) -> tuple[int, int, int, int]:
-    """Geometria monitora w pikselach fizycznych (DPI-aware) dla gdigrab."""
+    """Geometria monitora w pikselach fizycznych (DPI-aware) — podgląd rozmiaru/tryb Region."""
     geo = screen.geometry()
     dpr = screen.devicePixelRatio()
     return (
