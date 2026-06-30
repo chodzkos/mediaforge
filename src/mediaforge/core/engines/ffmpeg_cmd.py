@@ -8,7 +8,8 @@ Cel platformowy to Windows (nagrywanie): wideo przez ``ddagrab`` (Desktop Duplic
 API, D3D11, GPU — jak OBS; ``gdigrab``/GDI gubił klatki przy pełnoekranowym wideo bo
 jest CPU-bound), audio przez ``dshow`` (urządzenie WASAPI loopback dla dźwięku
 systemowego oraz mikrofon). Wybór monitora = ``output_idx`` ddagrab (hook pod hybrydę
-iGPU+dGPU; ddagrab łapie cały output — pod-region i okno po tytule nie są wspierane).
+iGPU+dGPU); pod-region realizuje ``crop`` w filtrze (względem monitora). Okno po tytule
+niewspierane przez ddagrab — tryb usunięty (nie udajemy cap/funkcji-widma).
 
 NVENC (HEVC/AV1) z fallbackiem programowym: :func:`select_video_encoder` schodzi po
 łańcuchu preferencji do pierwszego enkodera obecnego w buildzie FFmpeg
@@ -25,25 +26,24 @@ from mediaforge.core.engines.base import QualityOption
 
 
 class CaptureMode(StrEnum):
-    """Tryb źródła wideo."""
+    """Tryb źródła wideo (ddagrab łapie monitor; okno po tytule niewspierane)."""
 
-    FULLSCREEN = "fullscreen"  # cały pulpit (lub wybrany monitor jako region)
-    REGION = "region"  # prostokąt x,y,w,h
-    WINDOW = "window"  # konkretne okno po tytule
+    FULLSCREEN = "fullscreen"  # cały wybrany monitor (region=None)
+    REGION = "region"  # crop prostokąta x,y,w,h WEWNĄTRZ wybranego monitora
 
 
 @dataclass(slots=True)
 class CaptureSource:
-    """Co nagrywamy: pełny ekran / monitor (region) / okno.
+    """Co nagrywamy: ``monitor`` = ``output_idx`` ddagrab, opcjonalny ``region`` = crop.
 
-    ``monitor`` i ``region`` ustala GUI (DPI-aware, piksele fizyczne). Wybór monitora
-    sprowadza się do regionu = geometria tego monitora, więc FFmpeg dostaje offset+size.
+    ``region`` (x, y, w, h, piksele fizyczne) jest WZGLĘDEM wybranego monitora (nie
+    wirtualnego pulpitu) — ddagrab łapie ten monitor, crop tnie wewnątrz niego. ``None``
+    = cały monitor. Walidację zakresu (mieści się w rozdzielczości) robi GUI, nie builder.
     """
 
     mode: CaptureMode = CaptureMode.FULLSCREEN
     monitor: int = 0
-    region: tuple[int, int, int, int] | None = None  # x, y, w, h (piksele fizyczne)
-    window_title: str | None = None
+    region: tuple[int, int, int, int] | None = None  # x, y, w, h względem monitora
 
 
 @dataclass(slots=True)
@@ -152,6 +152,27 @@ def select_video_encoder(preferred_codec: str, encoders: Mapping[str, bool]) -> 
     return EncoderChoice("libx264", False)
 
 
+def _even(n: int) -> int:
+    """Zaokrągla w dół do parzystej (yuv420p wymaga parzystych w/h)."""
+    return n - (n % 2)
+
+
+def build_video_filter(region: tuple[int, int, int, int] | None) -> str:
+    """Wartość -vf. region = (x, y, w, h) względem WYBRANEGO monitora, albo None = cały.
+
+    ``hwdownload,format=bgra`` ściąga tekstury ddagrab z GPU do RAM; ``crop`` wycina
+    prostokąt PO pobraniu; ``yuv420p`` wymaga PARZYSTYCH w/h → zaokrąglamy w dół.
+    """
+    parts = ["hwdownload", "format=bgra"]
+    if region is not None:
+        x, y, w, h = (_even(v) for v in region)
+        if w <= 0 or h <= 0:
+            raise ValueError(f"Region niepoprawny po zaokrągleniu: {w}x{h}")
+        parts.append(f"crop={w}:{h}:{x}:{y}")
+    parts.append("format=yuv420p")
+    return ",".join(parts)
+
+
 def _video_input_args(source: CaptureSource, fps: int) -> list[str]:
     """Argumenty wejścia wideo dla ``ddagrab`` (Desktop Duplication API, GPU).
 
@@ -240,8 +261,8 @@ def build_record_command(
 
     # Kodek wideo (NVENC z fallbackiem) + bitrate.
     if not audio_only:
-        # ddagrab oddaje tekstury GPU → pobierz do RAM i ustaw format, inaczej enkoder odrzuci.
-        cmd += ["-vf", "hwdownload,format=bgra,format=yuv420p"]
+        # ddagrab oddaje tekstury GPU → pobierz do RAM (+ ewentualny crop regionu), ustaw format.
+        cmd += ["-vf", build_video_filter(source.region)]
         choice = select_video_encoder(quality.video_codec or "h264", encoders)
         cmd += ["-c:v", choice.name]
         if choice.hardware:
