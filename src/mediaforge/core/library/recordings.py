@@ -305,21 +305,42 @@ class RecordingStore:
         Iteruje podkatalogi ``library_root``, dla każdego z ``metadata.json`` robi upsert.
         Gdy ``prune`` — usuwa z indeksu materiały, których folder zniknął z dysku.
         Zwraca liczbę zindeksowanych materiałów.
+
+        Bezpieczeństwo prune (biblioteka na NAS-ie/sieci): NIE prunuje, gdy ``library_root``
+        nie da się wylistować (offline/brak dostępu) ANI gdy skan wyszedł pusty przy niepustym
+        indeksie — to sygnał „root niedostępny", nie „wszystko usunięte". Inaczej jeden klik
+        przy chwilowo nieosiągalnym NAS-ie wymazałby cały indeks.
         """
+        try:
+            children = sorted(library_root.iterdir())
+            listed = True
+        except OSError:
+            children, listed = [], False  # root niedostępny (np. NAS offline) — nie listujemy
         count = 0
-        if library_root.is_dir():
-            for child in sorted(library_root.iterdir()):
-                if not (child.is_dir() and metadata_path(child).is_file()):
-                    continue
-                try:
-                    meta = read_metadata(child)
-                except (OSError, ValueError):
-                    continue  # uszkodzony metadata.json — pomiń, nie wywalaj całego skanu
-                self.upsert_material(child, meta)
-                count += 1
-        if prune:
+        for child in children:
+            if not (child.is_dir() and metadata_path(child).is_file()):
+                continue
+            try:
+                meta = read_metadata(child)
+            except (OSError, ValueError):
+                continue  # uszkodzony metadata.json — pomiń, nie wywalaj całego skanu
+            self.upsert_material(child, meta)
+            count += 1
+        suspicious_empty = count == 0 and self._material_count() > 0
+        if prune and listed and not suspicious_empty:
             self._prune_missing_folders()
         return count
+
+    def _material_count(self) -> int:
+        """Liczba materiałów w indeksie (wierszy z folderem) — guard prune."""
+        conn = connect(self.path)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM recordings WHERE folder IS NOT NULL"
+            ).fetchone()
+            return int(row["n"])
+        finally:
+            conn.close()
 
     def _prune_missing_folders(self) -> None:
         """Usuwa z indeksu materiały, których folder zniknął z dysku (kaskada na tagi itd.)."""

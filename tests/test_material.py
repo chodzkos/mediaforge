@@ -141,3 +141,36 @@ def test_rescan_prunes_deleted_folder(tmp_path: Path) -> None:
     shutil.rmtree(lib / "B")
     store.rescan(lib)
     assert [m.title for _, _f, m in store.list_materials()] == ["A"]
+
+
+def test_rescan_does_not_wipe_index_when_root_unavailable(tmp_path: Path) -> None:
+    """NAS offline: root niedostępny → prune NIE kasuje indeksu (prawda przeżyje na NAS-ie)."""
+    import shutil
+
+    lib = tmp_path / "lib"
+    write_metadata(lib / "A", MaterialMetadata(title="A", created_at="t"))
+    write_metadata(lib / "B", MaterialMetadata(title="B", created_at="t"))
+    store = _store(tmp_path)
+    store.rescan(lib)
+    assert len(store.list_materials()) == 2
+
+    shutil.rmtree(lib)  # symulacja: cały root znika (NAS offline / ścieżka pusta)
+    assert store.rescan(lib) == 0
+    # KLUCZOWE: indeks nietknięty — bez tego guardu prune wymazałby wszystko.
+    assert len(store.list_materials()) == 2
+
+
+def test_rescan_skips_prune_on_empty_scan_with_nonempty_index(tmp_path: Path) -> None:
+    """Zero znalezionych przy niepustym indeksie = root niedostępny → NIE pruneuj."""
+    import shutil
+
+    lib = tmp_path / "lib"
+    write_metadata(lib / "A", MaterialMetadata(title="A", created_at="t"))
+    store = _store(tmp_path)
+    store.rescan(lib)
+    shutil.rmtree(lib / "A")  # folder materiału znika (np. odmontowany NAS)
+
+    empty = tmp_path / "empty"  # pusty, ale ISTNIEJĄCY root (np. pusto rozwiązana ścieżka)
+    empty.mkdir()
+    assert store.rescan(empty) == 0
+    assert len(store.list_materials()) == 1  # wpis zachowany, nie wymazany
