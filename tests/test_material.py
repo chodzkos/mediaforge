@@ -93,3 +93,51 @@ def test_list_filters_by_tag_and_category(tmp_path: Path) -> None:
     assert [m.title for _, _f, m in store.list_materials(category="AI")] == ["B"]
     assert store.all_tags() == ["bgp", "llm", "tcp"]
     assert store.all_categories() == ["AI", "Sieci"]
+
+
+def test_rescan_rebuilds_index_from_folders(tmp_path: Path) -> None:
+    """Folder = źródło prawdy: indeks SQLite odbudowywalny z metadata.json (pusta baza)."""
+    lib = tmp_path / "lib"
+    write_metadata(lib / "A", MaterialMetadata(title="A", created_at="t", tags=["x"]))
+    write_metadata(lib / "B", MaterialMetadata(title="B", created_at="t", category="K"))
+    # Folder bez metadata.json jest ignorowany.
+    (lib / "smieci").mkdir(parents=True)
+
+    store = _store(tmp_path)  # świeża, pusta baza
+    indexed = store.rescan(lib)
+
+    assert indexed == 2
+    assert {m.title for _, _f, m in store.list_materials()} == {"A", "B"}
+
+
+def test_rescan_picks_up_manual_edit(tmp_path: Path) -> None:
+    """Ręczna edycja metadata.json jest podchwytywana przez rescan (re-sync)."""
+    lib = tmp_path / "lib"
+    folder = lib / "A"
+    write_metadata(folder, MaterialMetadata(title="A", created_at="t"))
+    store = _store(tmp_path)
+    store.rescan(lib)
+
+    write_metadata(folder, MaterialMetadata(title="A poprawione", created_at="t", tags=["nowy"]))
+    store.rescan(lib)
+
+    materials = store.list_materials()
+    assert len(materials) == 1
+    assert materials[0][2].title == "A poprawione"
+    assert materials[0][2].tags == ["nowy"]
+
+
+def test_rescan_prunes_deleted_folder(tmp_path: Path) -> None:
+    """Materiał, którego folder zniknął z dysku, znika z indeksu (prune)."""
+    import shutil
+
+    lib = tmp_path / "lib"
+    write_metadata(lib / "A", MaterialMetadata(title="A", created_at="t"))
+    write_metadata(lib / "B", MaterialMetadata(title="B", created_at="t"))
+    store = _store(tmp_path)
+    store.rescan(lib)
+    assert len(store.list_materials()) == 2
+
+    shutil.rmtree(lib / "B")
+    store.rescan(lib)
+    assert [m.title for _, _f, m in store.list_materials()] == ["A"]

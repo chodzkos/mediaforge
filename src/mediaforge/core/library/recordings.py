@@ -16,7 +16,7 @@ from pathlib import Path
 from sqlite3 import Connection, Row
 
 from mediaforge.core.library.db import connect
-from mediaforge.core.library.material import MaterialMetadata
+from mediaforge.core.library.material import MaterialMetadata, metadata_path, read_metadata
 
 
 class RecordingStatus(StrEnum):
@@ -294,5 +294,44 @@ class RecordingStore:
                 "WHERE category IS NOT NULL AND category <> '' ORDER BY category"
             ).fetchall()
             return [str(r["category"]) for r in rows]
+        finally:
+            conn.close()
+
+    def rescan(self, library_root: Path, *, prune: bool = True) -> int:
+        """Odbudowuje/synchronizuje indeks SQLite z ``metadata.json`` w podfolderach biblioteki.
+
+        Czyni „folder = źródło prawdy" realnym: indeks da się odtworzyć z dysku po skasowaniu
+        bazy, po przeniesieniu biblioteki na inną maszynę albo po ręcznej edycji ``metadata.json``.
+        Iteruje podkatalogi ``library_root``, dla każdego z ``metadata.json`` robi upsert.
+        Gdy ``prune`` — usuwa z indeksu materiały, których folder zniknął z dysku.
+        Zwraca liczbę zindeksowanych materiałów.
+        """
+        count = 0
+        if library_root.is_dir():
+            for child in sorted(library_root.iterdir()):
+                if not (child.is_dir() and metadata_path(child).is_file()):
+                    continue
+                try:
+                    meta = read_metadata(child)
+                except (OSError, ValueError):
+                    continue  # uszkodzony metadata.json — pomiń, nie wywalaj całego skanu
+                self.upsert_material(child, meta)
+                count += 1
+        if prune:
+            self._prune_missing_folders()
+        return count
+
+    def _prune_missing_folders(self) -> None:
+        """Usuwa z indeksu materiały, których folder zniknął z dysku (kaskada na tagi itd.)."""
+        conn = connect(self.path)
+        try:
+            rows = conn.execute(
+                "SELECT id, folder FROM recordings WHERE folder IS NOT NULL"
+            ).fetchall()
+            for row in rows:
+                folder = str(row["folder"])
+                if folder and not Path(folder).exists():
+                    conn.execute("DELETE FROM recordings WHERE id = ?", (int(row["id"]),))
+            conn.commit()
         finally:
             conn.close()

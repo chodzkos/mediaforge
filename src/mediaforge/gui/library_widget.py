@@ -62,6 +62,13 @@ class LibraryWidget(QWidget):
         self._import_btn.setToolTip("Zaimportuj lokalne pliki A/V do biblioteki")
         self._import_btn.clicked.connect(self._open_import)
         bar.addWidget(self._import_btn)
+        self._rescan_btn = QPushButton("Przeskanuj")
+        self._rescan_btn.setToolTip(
+            "Odbuduj indeks z metadata.json w folderach biblioteki "
+            "(po skasowaniu bazy / przeniesieniu biblioteki / ręcznej edycji)"
+        )
+        self._rescan_btn.clicked.connect(self._on_rescan)
+        bar.addWidget(self._rescan_btn)
         bar.addStretch(1)
         bar.addWidget(QLabel("Kategoria:"))
         self._cat_filter = QComboBox()
@@ -232,6 +239,11 @@ class LibraryWidget(QWidget):
         dialog.exec()
         if dialog.imported_count:
             self.refresh_all()
+
+    def _on_rescan(self) -> None:
+        """Odbudowuje indeks z folderów biblioteki (metadata.json = źródło prawdy)."""
+        self._store.rescan(cfg_mod.default_recordings_dir())
+        self.refresh_all()
 
     def _set_details_enabled(self, enabled: bool) -> None:
         for widget in (
