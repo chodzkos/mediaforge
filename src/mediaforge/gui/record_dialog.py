@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from chodzkos_gui_kit.qt.theme import current_palette
 from chodzkos_gui_kit.qt.widgets import LogView, PathEntry
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QGuiApplication, QScreen
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from mediaforge.core import config as cfg_mod
 from mediaforge.core.detection import check_ffmpeg
+from mediaforge.core.engines.dshow_devices import DshowAudioDevice, list_dshow_audio_devices
 from mediaforge.core.engines.ffmpeg_cmd import (
     PRESETS,
     AudioConfig,
@@ -137,12 +139,35 @@ class RecordDialog(QDialog):
         form.addRow("", self._mic_audio)
         form.addRow("", self._mix_audio)
 
-        self._sys_device = QLineEdit()
-        self._sys_device.setPlaceholderText("Urządzenie loopback (ffmpeg -list_devices)")
+        # Enumeracja urządzeń dshow (Windows-only; inny OS → []), rozdzielona na loopback
+        # (dźwięk systemowy) i mikrofony. Combo edytowalne — zachowuje ręczne wpisanie.
+        devices = list_dshow_audio_devices()
+        loopback = [d for d in devices if d.is_loopback]
+        mics = [d for d in devices if not d.is_loopback]
+        self._has_loopback = bool(loopback)
+
+        self._sys_device = QComboBox()
+        self._sys_device.setEditable(True)
+        self._sys_device.setToolTip(
+            "Urządzenie loopback dźwięku systemowego (Stereo Mix / VB-Cable)"
+        )
+        self._fill_device_combo(self._sys_device, loopback)
         form.addRow("Urz. systemowe:", self._sys_device)
-        self._mic_device = QLineEdit()
-        self._mic_device.setPlaceholderText("Urządzenie mikrofonu (ffmpeg -list_devices)")
+        self._mic_device = QComboBox()
+        self._mic_device.setEditable(True)
+        self._mic_device.setToolTip("Urządzenie mikrofonu")
+        self._fill_device_combo(self._mic_device, mics)
         form.addRow("Urz. mikrofonu:", self._mic_device)
+
+        # Bez urządzenia loopback nie nagra się dźwięk systemowy — enumeracja go nie tworzy.
+        self._loopback_warn = QLabel(
+            "Brak urządzenia do nagrania dźwięku systemowego. Włącz „Miks stereo” "
+            "(Panel sterowania → Dźwięk → Nagrywanie → ppm → Pokaż wyłączone urządzenia) "
+            "albo zainstaluj wirtualny kabel (VB-Cable). Bez tego nagra się tylko obraz/mikrofon."
+        )
+        self._loopback_warn.setWordWrap(True)
+        self._loopback_warn.setStyleSheet(f"color: {current_palette().amber};")
+        form.addRow("", self._loopback_warn)
 
         self._out_dir = PathEntry(mode="dir", placeholder="Katalog wyjściowy nagrań")
         self._out_dir.set(str(cfg_mod.default_recordings_dir()))
@@ -196,6 +221,8 @@ class RecordDialog(QDialog):
         self._sys_device.setEnabled(self._sys_audio.isChecked())
         self._mic_device.setEnabled(self._mic_audio.isChecked())
         self._mix_audio.setEnabled(self._sys_audio.isChecked() and self._mic_audio.isChecked())
+        # Ostrzeżenie o braku loopbacku tylko, gdy dźwięk systemowy jest włączony.
+        self._loopback_warn.setVisible(self._sys_audio.isChecked() and not self._has_loopback)
 
         recording = self._session is not None and self._session.state in (
             RecorderState.RECORDING,
@@ -232,12 +259,33 @@ class RecordDialog(QDialog):
             return None
         return (x, y, w, h)
 
+    def _fill_device_combo(self, combo: QComboBox, devices: list[DshowAudioDevice]) -> None:
+        """Wypełnia combo: tekst = przyjazna nazwa, data = alt_name (jednoznaczna do -i audio=)."""
+        combo.clear()
+        for dev in devices:
+            combo.addItem(dev.name, dev.alt_name)
+        combo.addItem("", "")  # opcja: brak / wpisz ręcznie
+        combo.setCurrentIndex(0 if devices else combo.count() - 1)
+
+    @staticmethod
+    def _device_value(combo: QComboBox) -> str | None:
+        """alt_name (itemData) gdy tekst odpowiada urządzeniu z listy; inaczej wpisany tekst."""
+        text = combo.currentText().strip()
+        if not text:
+            return None
+        idx = combo.findText(text)
+        if idx >= 0:
+            data = combo.itemData(idx)
+            if isinstance(data, str) and data:
+                return data  # alt_name — odporna na kolizje/znaki w nazwie
+        return text
+
     def _build_audio_config(self) -> AudioConfig:
         return AudioConfig(
             system_audio=self._sys_audio.isChecked(),
             microphone=self._mic_audio.isChecked(),
-            system_device=self._sys_device.text() or None,
-            mic_device=self._mic_device.text() or None,
+            system_device=self._device_value(self._sys_device),
+            mic_device=self._device_value(self._mic_device),
             mix=self._mix_audio.isChecked() and self._mix_audio.isEnabled(),
         )
 
