@@ -15,13 +15,12 @@ from __future__ import annotations
 from chodzkos_gui_kit.config import Config
 from chodzkos_gui_kit.qt.theme import ThemeManager, ThemeSetting, current_palette
 from chodzkos_gui_kit.qt.widgets import LogView
-from PySide6.QtCore import QByteArray, Qt
+from PySide6.QtCore import QByteArray
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
-    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -31,6 +30,7 @@ from mediaforge import __version__
 from mediaforge.core import config as cfg_mod
 from mediaforge.core import detection
 from mediaforge.gui.about import open_about
+from mediaforge.gui.library_widget import LibraryWidget
 from mediaforge.gui.record_dialog import RecordDialog
 
 # Etykiety cyklu motywu (kolejność: auto → jasny → ciemny → auto).
@@ -67,10 +67,8 @@ class MainWindow(QMainWindow):
 
         root.addLayout(self._build_topbar())
 
-        library = QLabel("Biblioteka jest pusta — dodaj materiał, aby zacząć.")
-        library.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        library.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        root.addWidget(library, stretch=1)
+        self._library = LibraryWidget()
+        root.addWidget(self._library, stretch=1)
 
         self._log = LogView(timestamps=True, level_colors=_LOG_LEVEL_COLORS)
         self._log.setMinimumHeight(140)
@@ -120,9 +118,10 @@ class MainWindow(QMainWindow):
     # ── Nagrywanie ──────────────────────────────────────────────────────────--
 
     def _open_recorder(self) -> None:
-        """Otwiera dialog nagrywania ekranu/audio (S1)."""
+        """Otwiera dialog nagrywania ekranu/audio (S1); po zamknięciu odświeża bibliotekę."""
         dialog = RecordDialog(self)
         dialog.exec()
+        self._library.refresh_all()
 
     # ── Motyw ───────────────────────────────────────────────────────────────--
 

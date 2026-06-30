@@ -20,7 +20,7 @@ Szkielet pakietu (`core`/`gui`/`cli`), `pyproject` + uv, ruff/mypy/pytest, CI (W
 
 **Akceptacja:** nagranie 1 h zapisane bez utraty przy wymuszonym zamknięciu; A/V zsynchronizowane; tryb tylko-audio działa; pliki trafiają do folderu materiału + wpis w bibliotece.
 
-## ☐ S2 — Import lokalny + biblioteka
+## ☑ S2 — Import lokalny + biblioteka
 **Gałąź:** `feat/s2-library`
 
 `ImporterEngine` (MP4/MKV/MOV/MP3/WAV/M4A…), ekstrakcja audio, miniatury. Biblioteka: lista + metadane (tytuł, data, źródło, prowadzący, organizator, kategoria, tagi, długość, statusy), edycja metadanych, podgląd. Układ „jeden materiał = jeden folder" + `metadata.json`. **Profile źródeł (per domena, definiowane przez użytkownika):** domyślny silnik, metoda logowania, preset jakości, kategoria/tagi, szablon nazwy, tryb notatki, język — dopasowanie po domenie URL. Bez wbudowanego katalogu nazwanych platform.
