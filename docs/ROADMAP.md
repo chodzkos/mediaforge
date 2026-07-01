@@ -126,6 +126,9 @@ Przy S3 zaimplementowano tylko whisper.cpp (torch-free, działa na Blackwell). P
 
 ### Biblioteka / dane
 
+**Wiele library roots.**
+Obecnie system zna jeden kanoniczny root (`default_recordings_dir()`): rescan skanuje tylko jego, delete/path-safety działają tylko w jego obrębie. Materiały świadomie zapisane poza (rekorder na to pozwala, z ostrzeżeniem od `fix/out-of-library-warning`) są nieskanowane i niezarządzane. Docelowo: konfigurowalna LISTA rootów — rescan iteruje po wszystkich, path-safety = `is_relative_to(dowolny root)`, delete działa w każdym, GUI pozwala dodać/usunąć root w ustawieniach. Zrobić, gdy biblioteka realnie urośnie poza jeden katalog (np. drugi dysk / NAS jako osobny root). Uwaga wdrożeniowa: klucz konfiguracyjny od razu jako lista (`library_roots: [ścieżka]`) z migracją z pojedynczego — uniknie drugiej migracji configu.
+
 **Rescan raportuje pominięty prune do status baru.**
 Guard NAS-safety pomija prune, gdy root niedostępny/pusty a indeks niepusty (żeby QNAP offline nie wyczyścił biblioteki). Efekt uboczny: gdy legalnie opróżnisz bibliotekę, „Przeskanuj" nie czyści indeksu i nie mówi dlaczego — wygląda jak bug. Rescan powinien zwracać liczbę pominiętych/usuniętych i pokazywać w status barze („Pominięto prune: root pusty lub niedostępny"). Drobne, UX.
 
