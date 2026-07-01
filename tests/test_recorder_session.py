@@ -99,30 +99,6 @@ def test_session_pause_resume_continues_segment_numbering(tmp_path: Path) -> Non
     assert session.elapsed_seconds == 8.0
 
 
-def test_preroll_trims_only_first_leg(tmp_path: Path) -> None:
-    # Głowa (zimny start ddagrab) obcinana tylko przy 1. odcinku; wznowienie nie gubi treści.
-    spawned: list[list[str]] = []
-    session = RecorderSession(
-        source=CaptureSource(),
-        audio=AudioConfig(system_audio=False),
-        quality=PRESETS["standard"],
-        work_dir=tmp_path / "work",
-        encoders=_ENCODERS,
-        preroll_sec=3,
-        process_factory=_fake_factory(spawned),
-        clock=_Clock(),
-    )
-    session.start()
-    session.pause()
-    session.resume()
-    session.stop()
-
-    first_vf = spawned[0][spawned[0].index("-vf") + 1]
-    second_vf = spawned[1][spawned[1].index("-vf") + 1]
-    assert "trim=start=3" in first_vf  # pierwszy odcinek: głowa odcięta
-    assert "trim=" not in second_vf  # wznowienie: pełna treść
-
-
 def test_session_finalize_concats_segments(tmp_path: Path) -> None:
     spawned: list[list[str]] = []
     outputs: list[Path] = []

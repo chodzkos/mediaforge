@@ -171,13 +171,14 @@ def get_whisper_threads(cfg: Config) -> int | None:
 
 
 def get_record_preroll_sec(cfg: Config) -> int:
-    """Pre-roll nagrania: ile sekund głowy odciąć (zimny start ddagrab). Domyślnie 3.
+    """Pre-roll nagrania (UX): ile sekund GUI pokazuje „Przygotowuję…" przed „Nagrywam".
 
-    MUSI równać się ``trim=start`` w komendzie FFmpeg — GUI pokazuje „Przygotowuję…" przez
-    tyle sekund, więc to, co użytkownik puści po „Nagrywam", trafia do pliku od początku.
+    Domyślnie 5 (zmierzony transient zimnego startu ddagrab to ~6 s). To WYŁĄCZNIE odczekanie
+    w GUI — użytkownik zaczyna treść dopiero po sygnale, więc szarpana głowa przypada na czas
+    przed treścią. FFmpeg NIE tnie (trim samego wideo rozjeżdżał A/V).
     """
     value = cfg.get(_RECORD_PREROLL_KEY)
-    return value if isinstance(value, int) and value >= 0 else 3
+    return value if isinstance(value, int) and value >= 0 else 5
 
 
 # ── Profil obliczeniowy per maszyna (nadpisanie tieru) ─────────────────────────

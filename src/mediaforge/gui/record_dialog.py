@@ -83,7 +83,8 @@ class RecordDialog(QDialog):
             store=RecordingStore(cfg_mod.library_db_path()),
         )
         self._session: RecorderSession | None = None
-        # Pre-roll: odcinamy tyle sekund głowy (zimny start ddagrab); MUSI = trim w komendzie.
+        # Pre-roll (UX): tyle sekund „Przygotowuję…" przed „Nagrywam", by przeczekać zimny
+        # start ddagrab. FFmpeg nic nie tnie — user zaczyna treść po sygnale (głowa przed nią).
         self._preroll_sec = cfg_mod.get_record_preroll_sec(cfg_mod.load())
         self._recording_announced = False
 
@@ -328,7 +329,6 @@ class RecordDialog(QDialog):
             audio=self._build_audio_config(),
             quality=quality,
             work_dir=work_dir,
-            preroll_sec=self._preroll_sec,
         )
         try:
             self._session.start()
