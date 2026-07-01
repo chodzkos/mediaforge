@@ -45,6 +45,7 @@ _LITELLM_BASE_URL_KEY = "litellm_base_url"  # endpoint gatewaya LiteLLM (overrid
 _WHISPER_MODEL_KEY = "whisper_model"  # ścieżka do modelu whisper.cpp (.bin)
 _WHISPER_LANGUAGE_KEY = "whisper_language"  # 'auto' | 'pl' | 'en' (domyślnie auto)
 _WHISPER_THREADS_KEY = "whisper_threads"  # liczba wątków whisper-cli (opcjonalne)
+_RECORD_PREROLL_KEY = "record_preroll_sec"  # sekundy głowy nagrania odcięte (zimny start ddagrab)
 
 
 def load(on_dirty: Callable[[], None] | None = None) -> Config:
@@ -167,6 +168,16 @@ def get_whisper_threads(cfg: Config) -> int | None:
     """Liczba wątków whisper-cli z configu lub ``None`` (domyślne whisper.cpp)."""
     value = cfg.get(_WHISPER_THREADS_KEY)
     return value if isinstance(value, int) and value > 0 else None
+
+
+def get_record_preroll_sec(cfg: Config) -> int:
+    """Pre-roll nagrania: ile sekund głowy odciąć (zimny start ddagrab). Domyślnie 3.
+
+    MUSI równać się ``trim=start`` w komendzie FFmpeg — GUI pokazuje „Przygotowuję…" przez
+    tyle sekund, więc to, co użytkownik puści po „Nagrywam", trafia do pliku od początku.
+    """
+    value = cfg.get(_RECORD_PREROLL_KEY)
+    return value if isinstance(value, int) and value >= 0 else 3
 
 
 # ── Profil obliczeniowy per maszyna (nadpisanie tieru) ─────────────────────────

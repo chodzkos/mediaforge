@@ -157,11 +157,13 @@ def _even(n: int) -> int:
     return n - (n % 2)
 
 
-def build_video_filter(region: tuple[int, int, int, int] | None) -> str:
-    """Wartość -vf. region = (x, y, w, h) względem WYBRANEGO monitora, albo None = cały.
+def build_video_filter(region: tuple[int, int, int, int] | None, preroll_sec: int = 0) -> str:
+    """Wartość -vf. region = (x, y, w, h) względem WYBRANEGO monitora (None = cały monitor).
 
-    ``hwdownload,format=bgra`` ściąga tekstury ddagrab z GPU do RAM; ``crop`` wycina
-    prostokąt PO pobraniu; ``yuv420p`` wymaga PARZYSTYCH w/h → zaokrąglamy w dół.
+    ``hwdownload,format=bgra`` ściąga tekstury ddagrab z GPU do RAM; ``crop`` wycina prostokąt
+    PO pobraniu; ``trim=start=P,setpts=PTS-STARTPTS`` odrzuca pierwsze ``P`` sekund KLATEK
+    (zimny start ddagrab — szarpana głowa) przed enkoderem (enkoder ich nie koduje = zero
+    narzutu) i rebasuje pierwszy pts do 0; ``yuv420p`` wymaga PARZYSTYCH w/h → w dół.
     """
     parts = ["hwdownload", "format=bgra"]
     if region is not None:
@@ -169,6 +171,8 @@ def build_video_filter(region: tuple[int, int, int, int] | None) -> str:
         if w <= 0 or h <= 0:
             raise ValueError(f"Region niepoprawny po zaokrągleniu: {w}x{h}")
         parts.append(f"crop={w}:{h}:{x}:{y}")
+    if preroll_sec > 0:
+        parts += [f"trim=start={preroll_sec}", "setpts=PTS-STARTPTS"]
     parts.append("format=yuv420p")
     return ",".join(parts)
 
@@ -180,11 +184,10 @@ def _video_input_args(source: CaptureSource, fps: int) -> list[str]:
     konfiguracyjny pod hybrydę iGPU+dGPU; domyślnie 0). ddagrab oddaje tekstury D3D11 —
     pobranie do pamięci systemowej (``hwdownload``) robi filtr w :func:`build_record_command`.
     Pod-region (``region``) i okno po tytule nie są wspierane przez ddagrab → łapiemy monitor.
-    ``-use_wallclock_as_timestamps`` stabilizuje PTS przy długim nagraniu.
+    Bez ``-use_wallclock_as_timestamps``: długość pliku i tak jest poprawna, a wallclock
+    współtworzył szarpany timing zimnego startu (głowa nagrania).
     """
     return [
-        "-use_wallclock_as_timestamps",
-        "1",
         "-f",
         "lavfi",
         "-i",
@@ -211,6 +214,7 @@ def build_record_command(
     segment_pattern: str,
     segment_seconds: int = DEFAULT_SEGMENT_SECONDS,
     segment_start_number: int = 0,
+    preroll_sec: int = 0,
     ffmpeg: str = "ffmpeg",
 ) -> list[str]:
     """Buduje pełną komendę FFmpeg nagrywania z segmentacją (crash-safe).
@@ -227,6 +231,7 @@ def build_record_command(
         segment_pattern: wzorzec ścieżki segmentu, np. ``".../seg_%03d.mkv"``.
         segment_seconds: długość segmentu w sekundach.
         segment_start_number: numer pierwszego segmentu (rośnie po wznowieniu z pauzy).
+        preroll_sec: sekundy klatek do odcięcia z głowy (zimny start ddagrab); 0 = bez trim.
         ffmpeg: nazwa/ścieżka binarki.
 
     Returns:
@@ -237,7 +242,8 @@ def build_record_command(
     cmd: list[str] = [ffmpeg, "-hide_banner", "-y"]
 
     if not audio_only:
-        cmd += _video_input_args(source, quality.fps or 60)  # 60 fps domyślnie (niskie = skokowo)
+        # Min. 60 fps: 30 dawało szarpany steady-state, przy 60 płynnie (sprzęt wyrabia).
+        cmd += _video_input_args(source, max(quality.fps or 60, 60))
     for device in devices:
         cmd += ["-f", "dshow", "-i", f"audio={device}"]
 
@@ -261,8 +267,8 @@ def build_record_command(
 
     # Kodek wideo (NVENC z fallbackiem) + bitrate.
     if not audio_only:
-        # ddagrab oddaje tekstury GPU → pobierz do RAM (+ ewentualny crop regionu), ustaw format.
-        cmd += ["-vf", build_video_filter(source.region)]
+        # ddagrab oddaje tekstury GPU → pobierz do RAM (+ crop regionu, + trim głowy), ustaw format.
+        cmd += ["-vf", build_video_filter(source.region, preroll_sec)]
         choice = select_video_encoder(quality.video_codec or "h264", encoders)
         cmd += ["-c:v", choice.name]
         if choice.hardware:

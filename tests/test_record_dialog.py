@@ -98,6 +98,14 @@ def test_window_capture_removed(dialog: rd.RecordDialog) -> None:
     assert dialog._mode_combo.count() == 2  # tylko: cały monitor + region
 
 
+def test_recorded_seconds_counts_from_recording_signal(dialog: rd.RecordDialog) -> None:
+    # Licznik nagrania startuje od „Nagrywam" (po pre-rollu), nie od uruchomienia ffmpeg.
+    dialog._preroll_sec = 3
+    assert dialog._recorded_seconds(1.5) is None  # wciąż pre-roll → brak licznika
+    assert dialog._recorded_seconds(3.0) == 0.0  # granica: start nagrania
+    assert dialog._recorded_seconds(5.0) == 2.0  # 5 s ffmpeg - 3 s pre-roll
+
+
 def test_audio_config_reflects_checkboxes(dialog: rd.RecordDialog) -> None:
     dialog._sys_audio.setChecked(True)
     dialog._mic_audio.setChecked(True)
@@ -123,7 +131,7 @@ def test_start_stop_lifecycle_writes_library(dialog: rd.RecordDialog, tmp_path: 
 
     dialog._on_start()
     assert dialog._session is not None
-    assert "rozpoczęte" in dialog._log.toPlainText().lower()
+    assert "przygotowuję" in dialog._log.toPlainText().lower()  # faza pre-roll przed „Nagrywam"
 
     dialog._on_stop()
     assert dialog._session is None

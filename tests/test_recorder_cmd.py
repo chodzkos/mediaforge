@@ -81,7 +81,8 @@ def test_fullscreen_uses_ddagrab_output() -> None:
     )
     assert "gdigrab" not in cmd  # GDI (gubił klatki) zastąpiony przez Desktop Duplication
     assert _arg_value(cmd, "-f") == "lavfi"
-    assert _has_substr(cmd, "ddagrab=output_idx=0:framerate=30")
+    assert _has_substr(cmd, "ddagrab=output_idx=0:framerate=60")  # min 60 fps (standard=30→60)
+    assert "-use_wallclock_as_timestamps" not in cmd  # usunięty (współtworzył szarpany timing)
 
 
 def test_monitor_selects_output_idx() -> None:
@@ -132,6 +133,37 @@ def test_filter_rounds_odd_dimensions_down() -> None:
 def test_filter_degenerate_region_raises() -> None:
     with pytest.raises(ValueError, match="niepoprawny"):
         build_video_filter((0, 0, 100, 1))  # h=1 → po _even h=0
+
+
+def test_filter_preroll_inserts_trim_before_yuv() -> None:
+    vf = build_video_filter(None, preroll_sec=3)
+    assert vf == "hwdownload,format=bgra,trim=start=3,setpts=PTS-STARTPTS,format=yuv420p"
+    # trim/setpts PO hwdownload, PRZED format=yuv420p (odcięcie klatek przed enkoderem).
+    assert vf.index("hwdownload") < vf.index("trim=start=3") < vf.index("format=yuv420p")
+
+
+def test_filter_preroll_zero_has_no_trim() -> None:
+    assert "trim" not in build_video_filter(None, preroll_sec=0)
+
+
+def test_filter_region_and_preroll_order() -> None:
+    # crop (region) przed trim (głowa); oba przed format=yuv420p.
+    vf = build_video_filter((10, 20, 800, 600), preroll_sec=3)
+    assert vf == (
+        "hwdownload,format=bgra,crop=800:600:10:20,trim=start=3,setpts=PTS-STARTPTS,format=yuv420p"
+    )
+
+
+def test_record_command_preroll_adds_trim() -> None:
+    cmd = build_record_command(
+        source=CaptureSource(mode=CaptureMode.FULLSCREEN),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["standard"],
+        encoders=_ALL_ENCODERS,
+        segment_pattern="/tmp/seg_%03d.mkv",
+        preroll_sec=3,
+    )
+    assert "trim=start=3,setpts=PTS-STARTPTS" in _arg_value(cmd, "-vf")
 
 
 def test_video_pipeline_ddagrab_nvenc_cfr() -> None:
