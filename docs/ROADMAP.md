@@ -90,3 +90,41 @@ Nie budujemy go z góry. Do oceny dopiero gdy **≥3 funkcje z `FEATURES.md` rea
 ## Strategia ekstrakcji do gui-kit
 
 Komponenty GUI sprawdzone tu i w `pdf2md` → kandydaci do `chodzkos-gui-kit` (ekstrakcja po sprawdzeniu w ≥2 projektach).
+
+---
+
+## Backlog / Odroczone
+
+Funkcje i ulepszenia świadomie odłożone — z powodem odroczenia i warunkiem, przy którym wracają. Nie planowane etapy; do wyciągnięcia, gdy potrzeba stanie się realna.
+
+### Rekorder — architektura (przyszłość)
+
+**Ciepły pipeline nagrywania (OBS-style).**
+Problem: ddagrab startuje na zimno przy każdym nagraniu; Desktop Duplication API łapie stabilny strumień dopiero po ~3 s, pierwsze nierówne klatki trafiają do pliku jako szarpanie na starcie. Potwierdzone pomiarami: niezależne od rozdzielczości (1080p i 2560×1600 mają identyczną głowę) i od CPU (wyrabia) — timing źródła (DDA), nie przepustowość. `drop=` narasta tylko przez ~4 s, potem stoi; środek płynny. Długość pliku poprawna (15 s → 15.000 s), więc to nie problem sync. Workaround (`feat/recorder-preroll`): pre-roll + filtr `trim` odrzuca głowę przed enkoderem. Docelowe: trzymać capture+enkoder ciągle rozgrzany (jak OBS), zapis włączać na żądanie bez restartu ffmpeg → zero transientu, natychmiastowy start, brak pre-rollu. Koszt: długo żyjący proces ffmpeg w tle, sterowanie zapisem (segmentacja / named pipe / API), zarządzanie GPU w stanie gotowości, integracja z kolejką jobs i cyklem życia GUI.
+
+**Pełen-GPU pipeline nagrywania (`hwmap` → `scale_cuda` → `nvenc`).**
+Obecny pipeline: `hwdownload` → konwersja yuv420p na CPU → nvenc (GPU→RAM→CPU→GPU per klatka). Pełen-GPU wyeliminowałby transfery. ZABLOKOWANE na tym laptopie przez Optimus: ekran na iGPU (Intel), CUDA na dGPU (RTX) → `hwmap` D3D11→CUDA daje `Failed to create derived device context: -40`. Odblokowywalne tylko trybem tylko-dGPU (BIOS/MUX) — wtedy D3D11 i CUDA na jednej karcie. Uwaga: przy obecnej rozdzielczości/fps CPU wyrabia (steady-state płynny), więc to optymalizacja, nie konieczność — sensowne dopiero przy wyższej rozdzielczości/fps lub maszynie bez hybrydy.
+
+**Driver-free WASAPI loopback (dźwięk systemowy bez VB-Cable).**
+ffmpeg na Windows nie ma natywnego WASAPI; dźwięk systemowy wymaga urządzenia loopback dshow (Stereo Mix / wirtualny kabel), które użytkownik musi zainstalować/włączyć. Docelowe: pythonowe przechwytywanie WASAPI loopback (`pyaudiowpatch` albo `soundcard`) → PCM na stdin ffmpeg, bez VB-Cable. Koszt: nowy komponent + wątek + ffmpeg przestaje być jedyną ścieżką audio. Powiązane: `feat/dshow-device-enum` (enum + detekcja loopbacku + hint) łagodzi, ale nie tworzy urządzenia.
+
+### Rekorder — znane ograniczenia
+
+**Capture okna po tytule — niewspierane.**
+ddagrab łapie cały monitor, nie zna okien. Capture okna po tytule usunięty z GUI (`feat/recorder-region-crop`); zostały monitor (`output_idx`) + region (`crop`). Przywrócenie wymagałoby innego backendu (np. Windows.Graphics.Capture per-okno) — realna zmiana. Region-crop pokrywa większość potrzeb (wytnij obszar odtwarzacza).
+
+### Transkrypcja
+
+**Backend HF / insanely-fast-whisper (tor torch).**
+Przy S3 zaimplementowano tylko whisper.cpp (torch-free, działa na Blackwell). Protocol backendu + stub zostawione pod drugi tor (torch/transformers) dla jakości/prędkości na niektórych kartach. Odroczone, bo torch na Blackwell sm_120 to osobny temat (crash bez odpowiedniej wersji). Sensowne, gdy whisper.cpp okaże się niewystarczający albo torch+Blackwell się ustabilizuje.
+
+**Pełne strumieniowanie linii transkrypcji.**
+`feat/transcribe-progress` pokazuje procent (`jobs.progress` + polling). Strumieniowanie surowych linii whisper-cli na żywo (segmenty tekstu w trakcie) wymaga osobnej infrastruktury log-per-job. Procent rozwiązuje „czy stoi?"; strumień linii to wygoda, nie konieczność.
+
+### Biblioteka / dane
+
+**Rescan raportuje pominięty prune do status baru.**
+Guard NAS-safety pomija prune, gdy root niedostępny/pusty a indeks niepusty (żeby QNAP offline nie wyczyścił biblioteki). Efekt uboczny: gdy legalnie opróżnisz bibliotekę, „Przeskanuj" nie czyści indeksu i nie mówi dlaczego — wygląda jak bug. Rescan powinien zwracać liczbę pominiętych/usuniętych i pokazywać w status barze („Pominięto prune: root pusty lub niedostępny"). Drobne, UX.
+
+**Backfill wierszy pre-S2 (`folder=NULL`).**
+`ensure_schema` migruje stare bazy (dodaje `folder`/`presenter`/…), ale wiersze sprzed S2 mają `folder=NULL` i nie pokazują się w `list_materials()` (filtr prawdziwych materiałów). Dane nie giną. Jeśli takie wiersze mają foldery z `metadata.json` — rescan powinien je naprawić (upsert z folderem), sprawdzić brak duplikatów. Jeśli nie mają (format pre-S2) — backfill albo poluzowanie filtra. Dotyczy tylko realnych nagrań sprzed S2.
