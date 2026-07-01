@@ -57,6 +57,16 @@ def test_provider_assignments_roundtrip(tmp_path: Path) -> None:
     assert spec.supports_vision is True
 
 
+def test_record_preroll_default_and_override(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    assert cfg_mod.get_record_preroll_sec(_fresh(path)) == 3  # domyślnie 3 s
+
+    cfg = _fresh(path)
+    cfg[cfg_mod._RECORD_PREROLL_KEY] = 5
+    cfg.save_now()
+    assert cfg_mod.get_record_preroll_sec(_fresh(path)) == 5
+
+
 def test_on_dirty_fires(tmp_path: Path) -> None:
     """Hak ``on_dirty`` (cel debounce GUI) odpala się przy każdej zmianie."""
     calls: list[int] = []

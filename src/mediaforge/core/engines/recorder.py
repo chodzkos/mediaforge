@@ -158,6 +158,7 @@ class RecorderSession:
         work_dir: Path,
         encoders: dict[str, bool],
         segment_seconds: int = DEFAULT_SEGMENT_SECONDS,
+        preroll_sec: int = 0,
         process_factory: ProcessFactory = _default_process_factory,
         concat_runner: ConcatRunner = _default_concat_runner,
         clock: Callable[[], float] = time.monotonic,
@@ -168,6 +169,7 @@ class RecorderSession:
         self.work_dir = work_dir
         self.encoders = encoders
         self.segment_seconds = segment_seconds
+        self.preroll_sec = preroll_sec
         self._process_factory = process_factory
         self._concat_runner = concat_runner
         self._clock = clock
@@ -182,6 +184,9 @@ class RecorderSession:
 
     def _spawn(self) -> None:
         self.work_dir.mkdir(parents=True, exist_ok=True)
+        # Pre-roll (odcięcie zimnego startu) tylko przy pierwszym odcinku — wznowienie z pauzy
+        # nie ma gubić treści użytkownika. Dzięki temu (elapsed - preroll) = długość pliku.
+        start_number = self._next_segment_number()
         command = build_record_command(
             source=self.source,
             audio=self.audio,
@@ -189,7 +194,8 @@ class RecorderSession:
             encoders=self.encoders,
             segment_pattern=segments.segment_pattern(self.work_dir, self.container),
             segment_seconds=self.segment_seconds,
-            segment_start_number=self._next_segment_number(),
+            segment_start_number=start_number,
+            preroll_sec=self.preroll_sec if start_number == 0 else 0,
         )
         self._proc = self._process_factory(command)
         self._leg_started_at = self._clock()
@@ -301,6 +307,7 @@ class RecorderEngine:
         quality: QualityOption,
         work_dir: Path,
         segment_seconds: int = DEFAULT_SEGMENT_SECONDS,
+        preroll_sec: int = 0,
     ) -> RecorderSession:
         """Tworzy sesję nagrywania (do interaktywnego sterowania z GUI)."""
         return RecorderSession(
@@ -310,6 +317,7 @@ class RecorderEngine:
             work_dir=work_dir,
             encoders=self.encoders,
             segment_seconds=segment_seconds,
+            preroll_sec=preroll_sec,
             process_factory=self.process_factory,
             concat_runner=self.concat_runner,
         )

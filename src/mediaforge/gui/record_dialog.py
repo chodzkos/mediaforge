@@ -13,6 +13,7 @@ ddagrab nie zna okien.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from chodzkos_gui_kit.qt.theme import current_palette
@@ -82,6 +83,9 @@ class RecordDialog(QDialog):
             store=RecordingStore(cfg_mod.library_db_path()),
         )
         self._session: RecorderSession | None = None
+        # Pre-roll: odcinamy tyle sekund głowy (zimny start ddagrab); MUSI = trim w komendzie.
+        self._preroll_sec = cfg_mod.get_record_preroll_sec(cfg_mod.load())
+        self._recording_announced = False
 
         self._timer = QTimer(self)
         self._timer.setInterval(500)
@@ -324,6 +328,7 @@ class RecordDialog(QDialog):
             audio=self._build_audio_config(),
             quality=quality,
             work_dir=work_dir,
+            preroll_sec=self._preroll_sec,
         )
         try:
             self._session.start()
@@ -332,7 +337,11 @@ class RecordDialog(QDialog):
             self._log.append_line(f"Nie udało się rozpocząć: {exc}", "error")
             self._sync_controls()
             return
-        self._log.append_line("Nagrywanie rozpoczęte", "recording")
+        self._recording_announced = False
+        if self._preroll_sec > 0:
+            self._log.append_line(
+                f"Przygotowuję nagranie… (pre-roll {self._preroll_sec}s)", "paused"
+            )
         self._timer.start()
         self._sync_controls()
 
@@ -376,11 +385,28 @@ class RecordDialog(QDialog):
 
     # ── Timer / telemetria ───────────────────────────────────────────────────────
 
+    def _recorded_seconds(self, elapsed: float) -> float | None:
+        """Czas realnego nagrania = elapsed FFmpeg - pre-roll (odcięta głowa).
+
+        ``None`` gdy wciąż trwa pre-roll (głowa jeszcze odcinana) — licznik startuje dopiero
+        od sygnału „Nagrywam", nie od uruchomienia ffmpeg.
+        """
+        recorded = elapsed - self._preroll_sec
+        return recorded if recorded >= 0 else None
+
     def _tick(self) -> None:
         if self._session is None:
             return
         st = self._session.status()
-        secs = int(st.elapsed_seconds)
+        recorded = self._recorded_seconds(st.elapsed_seconds)
+        if recorded is None:  # faza pre-roll: pokaż odliczanie „Przygotowuję…"
+            remaining = max(1, math.ceil(self._preroll_sec - st.elapsed_seconds))
+            self._timer_label.setText(f"Przygotowuję… {remaining}s")
+            return
+        if not self._recording_announced:
+            self._recording_announced = True
+            self._log.append_line("● Nagrywam", "recording")
+        secs = int(recorded)
         self._timer_label.setText(
             f"Czas: {secs // 3600:02d}:{secs % 3600 // 60:02d}:{secs % 60:02d}"
         )
