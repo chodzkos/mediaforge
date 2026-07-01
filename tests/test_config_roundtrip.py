@@ -59,12 +59,12 @@ def test_provider_assignments_roundtrip(tmp_path: Path) -> None:
 
 def test_record_preroll_default_and_override(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
-    assert cfg_mod.get_record_preroll_sec(_fresh(path)) == 3  # domyślnie 3 s
+    assert cfg_mod.get_record_preroll_sec(_fresh(path)) == 5  # domyślnie 5 s (transient ~6 s)
 
     cfg = _fresh(path)
-    cfg[cfg_mod._RECORD_PREROLL_KEY] = 5
+    cfg[cfg_mod._RECORD_PREROLL_KEY] = 8
     cfg.save_now()
-    assert cfg_mod.get_record_preroll_sec(_fresh(path)) == 5
+    assert cfg_mod.get_record_preroll_sec(_fresh(path)) == 8
 
 
 def test_on_dirty_fires(tmp_path: Path) -> None:

@@ -82,7 +82,10 @@ def test_fullscreen_uses_ddagrab_output() -> None:
     assert "gdigrab" not in cmd  # GDI (gubił klatki) zastąpiony przez Desktop Duplication
     assert _arg_value(cmd, "-f") == "lavfi"
     assert _has_substr(cmd, "ddagrab=output_idx=0:framerate=60")  # min 60 fps (standard=30→60)
-    assert "-use_wallclock_as_timestamps" not in cmd  # usunięty (współtworzył szarpany timing)
+    # Wspólny zegar + większa kolejka na wejściu wideo (sync A/V, brak głodzenia strumieni).
+    i = cmd.index("-f")  # pierwsze -f = wejście wideo (lavfi)
+    assert cmd[:i].count("-use_wallclock_as_timestamps") == 1
+    assert "-thread_queue_size" in cmd[:i]
 
 
 def test_monitor_selects_output_idx() -> None:
@@ -135,35 +138,22 @@ def test_filter_degenerate_region_raises() -> None:
         build_video_filter((0, 0, 100, 1))  # h=1 → po _even h=0
 
 
-def test_filter_preroll_inserts_trim_before_yuv() -> None:
-    vf = build_video_filter(None, preroll_sec=3)
-    assert vf == "hwdownload,format=bgra,trim=start=3,setpts=PTS-STARTPTS,format=yuv420p"
-    # trim/setpts PO hwdownload, PRZED format=yuv420p (odcięcie klatek przed enkoderem).
-    assert vf.index("hwdownload") < vf.index("trim=start=3") < vf.index("format=yuv420p")
+def test_filter_never_has_trim() -> None:
+    # Regresja: trim samego wideo rozjeżdżał A/V — filtr NIGDY nie tnie głowy (robi to pre-roll UX).
+    assert "trim" not in build_video_filter(None)
+    assert "trim" not in build_video_filter((10, 20, 800, 600))
 
 
-def test_filter_preroll_zero_has_no_trim() -> None:
-    assert "trim" not in build_video_filter(None, preroll_sec=0)
-
-
-def test_filter_region_and_preroll_order() -> None:
-    # crop (region) przed trim (głowa); oba przed format=yuv420p.
-    vf = build_video_filter((10, 20, 800, 600), preroll_sec=3)
-    assert vf == (
-        "hwdownload,format=bgra,crop=800:600:10:20,trim=start=3,setpts=PTS-STARTPTS,format=yuv420p"
-    )
-
-
-def test_record_command_preroll_adds_trim() -> None:
+def test_record_command_vf_has_no_trim() -> None:
     cmd = build_record_command(
         source=CaptureSource(mode=CaptureMode.FULLSCREEN),
         audio=AudioConfig(system_audio=False),
         quality=PRESETS["standard"],
         encoders=_ALL_ENCODERS,
         segment_pattern="/tmp/seg_%03d.mkv",
-        preroll_sec=3,
     )
-    assert "trim=start=3,setpts=PTS-STARTPTS" in _arg_value(cmd, "-vf")
+    vf = _arg_value(cmd, "-vf")
+    assert "trim" not in vf and "setpts" not in vf
 
 
 def test_video_pipeline_ddagrab_nvenc_cfr() -> None:
@@ -196,9 +186,29 @@ def test_system_audio_adds_dshow_input() -> None:
     )
     assert "audio=Loopback (Realtek)" in cmd
     assert _arg_value(cmd, "-c:a") == "aac"
+    # dshow: wspólny wallclock + audio_buffer_size 50 (tnie 500 ms paczki → brak non-monotonic DTS).
+    assert _arg_value(cmd, "-audio_buffer_size") == "50"
+    assert "-use_wallclock_as_timestamps" in cmd and "-thread_queue_size" in cmd
+    # pojedyncze audio: aresample=async=1 jako prosty filtr toru.
+    assert _arg_value(cmd, "-af") == "aresample=async=1"
 
 
-def test_mix_two_sources_uses_amix() -> None:
+def test_dshow_input_has_wallclock_before_its_i() -> None:
+    cmd = build_record_command(
+        source=CaptureSource(),
+        audio=AudioConfig(system_audio=True, system_device="Loopback"),
+        quality=PRESETS["standard"],
+        encoders=_ALL_ENCODERS,
+        segment_pattern="/tmp/seg_%03d.mkv",
+    )
+    # Flagi wejściowe (wallclock/thread_queue/audio_buffer) PRZED swoim -i "audio=…".
+    i_audio = cmd.index("audio=Loopback") - 1  # pozycja -i
+    window = cmd[:i_audio]
+    for flag in ("-use_wallclock_as_timestamps", "-thread_queue_size", "-audio_buffer_size"):
+        assert flag in window
+
+
+def test_mix_two_sources_aresample_per_input_before_amix() -> None:
     cmd = build_record_command(
         source=CaptureSource(),
         audio=AudioConfig(
@@ -213,11 +223,13 @@ def test_mix_two_sources_uses_amix() -> None:
         segment_pattern="/tmp/seg_%03d.mkv",
     )
     fc = _arg_value(cmd, "-filter_complex")
-    assert "amix=inputs=2" in fc
+    # aresample PER WEJŚCIE, PRZED amix.
+    assert fc.count("aresample=async=1") == 2
+    assert fc.index("aresample=async=1") < fc.index("amix=inputs=2")
     assert "[aout]" in cmd  # zmapowany zmiksowany ślad
 
 
-def test_two_sources_without_mix_map_separately() -> None:
+def test_two_sources_without_mix_aresample_and_separate_maps() -> None:
     cmd = build_record_command(
         source=CaptureSource(),
         audio=AudioConfig(
@@ -231,10 +243,10 @@ def test_two_sources_without_mix_map_separately() -> None:
         encoders=_ALL_ENCODERS,
         segment_pattern="/tmp/seg_%03d.mkv",
     )
-    assert "-filter_complex" not in cmd
-    # wideo = 0, audio = 1 i 2
+    fc = _arg_value(cmd, "-filter_complex")
+    assert fc.count("aresample=async=1") == 2 and "amix" not in fc
     maps = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-map"]
-    assert maps == ["0:v", "1:a", "2:a"]
+    assert maps == ["0:v", "[a0]", "[a1]"]  # wideo + dwa osobne, przeresamplowane ślady
 
 
 def test_audio_only_has_no_video_input() -> None:
@@ -248,6 +260,8 @@ def test_audio_only_has_no_video_input() -> None:
     assert not _has_substr(cmd, "ddagrab")  # brak wejścia wideo
     assert "-c:v" not in cmd
     assert "audio=Loopback" in cmd
+    assert _arg_value(cmd, "-map") == "0:a"  # audio-only: pierwsze wejście to audio
+    assert _arg_value(cmd, "-af") == "aresample=async=1"
 
 
 # ── Segmentacja + estymacja rozmiaru ──────────────────────────────────────────

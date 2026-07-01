@@ -157,13 +157,14 @@ def _even(n: int) -> int:
     return n - (n % 2)
 
 
-def build_video_filter(region: tuple[int, int, int, int] | None, preroll_sec: int = 0) -> str:
+def build_video_filter(region: tuple[int, int, int, int] | None) -> str:
     """Wartość -vf. region = (x, y, w, h) względem WYBRANEGO monitora (None = cały monitor).
 
     ``hwdownload,format=bgra`` ściąga tekstury ddagrab z GPU do RAM; ``crop`` wycina prostokąt
-    PO pobraniu; ``trim=start=P,setpts=PTS-STARTPTS`` odrzuca pierwsze ``P`` sekund KLATEK
-    (zimny start ddagrab — szarpana głowa) przed enkoderem (enkoder ich nie koduje = zero
-    narzutu) i rebasuje pierwszy pts do 0; ``yuv420p`` wymaga PARZYSTYCH w/h → w dół.
+    PO pobraniu; ``yuv420p`` wymaga PARZYSTYCH w/h → zaokrąglamy w dół.
+
+    BEZ ``trim`` głowy: cięcie samego wideo rozjeżdżało A/V (audio nieprzycinane). Głowę
+    (transient zimnego startu ddagrab) maskuje pre-roll w GUI (odczekanie), nie ffmpeg.
     """
     parts = ["hwdownload", "format=bgra"]
     if region is not None:
@@ -171,8 +172,6 @@ def build_video_filter(region: tuple[int, int, int, int] | None, preroll_sec: in
         if w <= 0 or h <= 0:
             raise ValueError(f"Region niepoprawny po zaokrągleniu: {w}x{h}")
         parts.append(f"crop={w}:{h}:{x}:{y}")
-    if preroll_sec > 0:
-        parts += [f"trim=start={preroll_sec}", "setpts=PTS-STARTPTS"]
     parts.append("format=yuv420p")
     return ",".join(parts)
 
@@ -184,10 +183,15 @@ def _video_input_args(source: CaptureSource, fps: int) -> list[str]:
     konfiguracyjny pod hybrydę iGPU+dGPU; domyślnie 0). ddagrab oddaje tekstury D3D11 —
     pobranie do pamięci systemowej (``hwdownload``) robi filtr w :func:`build_record_command`.
     Pod-region (``region``) i okno po tytule nie są wspierane przez ddagrab → łapiemy monitor.
-    Bez ``-use_wallclock_as_timestamps``: długość pliku i tak jest poprawna, a wallclock
-    współtworzył szarpany timing zimnego startu (głowa nagrania).
+    ``-use_wallclock_as_timestamps 1`` (ten sam znacznik na wejściu audio) daje OBU strumieniom
+    wspólny zegar czasu rzeczywistego → muxer trzyma realną relację A/V. ``-thread_queue_size``
+    powiększa kolejkę wejścia, żeby drugi strumień nie głodził tego (dropy).
     """
     return [
+        "-use_wallclock_as_timestamps",
+        "1",
+        "-thread_queue_size",
+        "1024",
         "-f",
         "lavfi",
         "-i",
@@ -214,7 +218,6 @@ def build_record_command(
     segment_pattern: str,
     segment_seconds: int = DEFAULT_SEGMENT_SECONDS,
     segment_start_number: int = 0,
-    preroll_sec: int = 0,
     ffmpeg: str = "ffmpeg",
 ) -> list[str]:
     """Buduje pełną komendę FFmpeg nagrywania z segmentacją (crash-safe).
@@ -231,7 +234,6 @@ def build_record_command(
         segment_pattern: wzorzec ścieżki segmentu, np. ``".../seg_%03d.mkv"``.
         segment_seconds: długość segmentu w sekundach.
         segment_start_number: numer pierwszego segmentu (rośnie po wznowieniu z pauzy).
-        preroll_sec: sekundy klatek do odcięcia z głowy (zimny start ddagrab); 0 = bez trim.
         ffmpeg: nazwa/ścieżka binarki.
 
     Returns:
@@ -245,30 +247,45 @@ def build_record_command(
         # Min. 60 fps: 30 dawało szarpany steady-state, przy 60 płynnie (sprzęt wyrabia).
         cmd += _video_input_args(source, max(quality.fps or 60, 60))
     for device in devices:
-        cmd += ["-f", "dshow", "-i", f"audio={device}"]
+        # audio_buffer_size 50: tnie ~500 ms paczki dshow na ~50 ms → koniec non-monotonic DTS
+        # (skoków znaczników → klampowania → dropów wideo). Wspólny wallclock + thread_queue.
+        cmd += [
+            "-use_wallclock_as_timestamps",
+            "1",
+            "-thread_queue_size",
+            "1024",
+            "-audio_buffer_size",
+            "50",
+            "-f",
+            "dshow",
+            "-i",
+            f"audio={device}",
+        ]
 
-    # Mapowanie + miks audio.
+    # Mapowanie strumieni + tor audio. aresample=async=1 wygładza jitter dshow; przy >1 źródle
+    # aresample PER WEJŚCIE (przed amix albo osobnymi śladami). Wspólny wallclock trzyma A/V.
+    base = 0 if audio_only else 1  # indeks pierwszego wejścia audio (po ewentualnym wideo)
     mixing = audio.mix and len(devices) > 1
-    if mixing:
-        # Indeksy wejść audio zaczynają się po (ewentualnym) wejściu wideo.
-        base = 0 if audio_only else 1
-        inputs = "".join(f"[{base + i}:a]" for i in range(len(devices)))
-        cmd += ["-filter_complex", f"{inputs}amix=inputs={len(devices)}:normalize=0[aout]"]
-        if not audio_only:
-            cmd += ["-map", "0:v", "-map", "[aout]"]
-        else:
-            cmd += ["-map", "[aout]"]
-    else:
-        if not audio_only:
-            cmd += ["-map", "0:v"]
-        for i in range(len(devices)):
-            idx = i if audio_only else i + 1
-            cmd += ["-map", f"{idx}:a"]
+    if len(devices) > 1:
+        chains = ";".join(f"[{base + i}:a]aresample=async=1[a{i}]" for i in range(len(devices)))
+        if mixing:
+            labels = "".join(f"[a{i}]" for i in range(len(devices)))
+            chains = f"{chains};{labels}amix=inputs={len(devices)}:normalize=0[aout]"
+        cmd += ["-filter_complex", chains]
+
+    if not audio_only:
+        cmd += ["-map", "0:v"]
+    if len(devices) == 1:
+        cmd += ["-map", f"{base}:a", "-af", "aresample=async=1"]
+    elif mixing:
+        cmd += ["-map", "[aout]"]
+    elif len(devices) > 1:  # osobne ślady bez miksu
+        cmd += [arg for i in range(len(devices)) for arg in ("-map", f"[a{i}]")]
 
     # Kodek wideo (NVENC z fallbackiem) + bitrate.
     if not audio_only:
-        # ddagrab oddaje tekstury GPU → pobierz do RAM (+ crop regionu, + trim głowy), ustaw format.
-        cmd += ["-vf", build_video_filter(source.region, preroll_sec)]
+        # ddagrab oddaje tekstury GPU → pobierz do RAM (+ crop regionu), ustaw format (bez trim).
+        cmd += ["-vf", build_video_filter(source.region)]
         choice = select_video_encoder(quality.video_codec or "h264", encoders)
         cmd += ["-c:v", choice.name]
         if choice.hardware:
