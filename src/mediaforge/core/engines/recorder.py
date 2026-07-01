@@ -14,6 +14,7 @@ materiału + wpis w bibliotece (status ``recorded``).
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -131,6 +132,40 @@ def safe_filename(name: str, *, fallback: str = "nagranie") -> str:
     return cleaned or fallback
 
 
+# ── Kolizja nazwy materiału (folder = źródło prawdy) ──────────────────────────
+
+
+def material_dir_for(output_dir: Path, title: str) -> Path:
+    """Folder materiału dla nazwy — ta sama konwencja co :meth:`finalize_to_library`."""
+    return output_dir / safe_filename(title)
+
+
+def material_exists(output_dir: Path, title: str) -> bool:
+    """Czy materiał o tej nazwie już istnieje (folder z ``metadata.json`` = ukończony materiał)."""
+    return (material_dir_for(output_dir, title) / "metadata.json").is_file()
+
+
+def next_free_title(output_dir: Path, title: str) -> str:
+    """Pierwsza wolna nazwa: sama ``title``, albo ``title (2)``, ``title (3)``, … (wolny folder)."""
+    candidate = title
+    n = 1
+    while material_exists(output_dir, candidate):
+        n += 1
+        candidate = f"{title} ({n})"
+    return candidate
+
+
+def discard_material_dir(output_dir: Path, title: str) -> None:
+    """Usuwa cały folder materiału (plik + segmenty ``_work`` + transcript + metadata) — nadpisanie.
+
+    SQLite odświeża potem ``upsert_material`` w :meth:`finalize_to_library` (ten sam folder =
+    ten sam wiersz, bez duplikatu; świeże metadane zerują ``transcript_status``).
+    """
+    material_dir = material_dir_for(output_dir, title)
+    if material_dir.exists():
+        shutil.rmtree(material_dir, ignore_errors=True)
+
+
 @dataclass(slots=True)
 class RecorderStatus:
     """Migawka stanu sesji do GUI (timer + szacowany rozmiar)."""
@@ -202,8 +237,18 @@ class RecorderSession:
         """Rozpoczyna nagrywanie. Dozwolone tylko ze stanu IDLE."""
         if self.state is not RecorderState.IDLE:
             raise RuntimeError(f"start() niedozwolony w stanie {self.state}")
+        self._clear_work_dir()
         self._spawn()
         self.state = RecorderState.RECORDING
+
+    def _clear_work_dir(self) -> None:
+        """Czyści katalog roboczy PRZED nową sesją: stare ``seg_*.mkv`` skleiłyby się z nowymi
+        (concat po stop) → dwie zmieszane sesje w jednym pliku. Tylko ze :meth:`start`
+        (świadomy start), NIE z :meth:`resume` — wznowienie kontynuuje numerację segmentów.
+        Odzysk po crashu (jeśli dodany) biegnie wcześniej, przy otwarciu dialogu — nie tu.
+        """
+        if self.work_dir.exists():
+            shutil.rmtree(self.work_dir, ignore_errors=True)
 
     def pause(self) -> None:
         """Wstrzymuje: domyka bieżący proces FFmpeg, zlicza czas odcinka."""

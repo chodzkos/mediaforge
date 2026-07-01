@@ -113,6 +113,9 @@ ffmpeg na Windows nie ma natywnego WASAPI; dźwięk systemowy wymaga urządzenia
 **Capture okna po tytule — niewspierane.**
 ddagrab łapie cały monitor, nie zna okien. Capture okna po tytule usunięty z GUI (`feat/recorder-region-crop`); zostały monitor (`output_idx`) + region (`crop`). Przywrócenie wymagałoby innego backendu (np. Windows.Graphics.Capture per-okno) — realna zmiana. Region-crop pokrywa większość potrzeb (wytnij obszar odtwarzacza).
 
+**Doklejanie do istniejącego nagrania (append).**
+Przy kolizji nazwy (`fix/recorder-name-collision`) dajemy Nadpisz / Nową nazwę / Anuluj — **bez** opcji „doklej". Doklejanie do gotowego materiału wymaga wymuszenia identycznych parametrów sesji (rozdzielczość/fps/enkoder) i concat świadomego timestampów; przy segmentowej mechanice i concat kopią strumieni append o innych parametrach = plik uszkodzony/nieodtwarzalny od połowy. Rozważyć przy ciepłym pipeline (stały, rozgrzany capture+enkoder o znanych parametrach ułatwia bezpieczne dopisywanie).
+
 ### Transkrypcja
 
 **Backend HF / insanely-fast-whisper (tor torch).**

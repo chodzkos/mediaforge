@@ -14,6 +14,7 @@ ddagrab nie zna okien.
 from __future__ import annotations
 
 import math
+from enum import StrEnum
 from pathlib import Path
 
 from chodzkos_gui_kit.qt.theme import current_palette
@@ -43,7 +44,15 @@ from mediaforge.core.engines.ffmpeg_cmd import (
     CaptureMode,
     CaptureSource,
 )
-from mediaforge.core.engines.recorder import RecorderEngine, RecorderSession, RecorderState
+from mediaforge.core.engines.recorder import (
+    RecorderEngine,
+    RecorderSession,
+    RecorderState,
+    discard_material_dir,
+    material_exists,
+    next_free_title,
+    safe_filename,
+)
 from mediaforge.core.library.db import Database
 from mediaforge.core.library.recordings import RecordingStore
 
@@ -67,6 +76,63 @@ def _physical_geometry(screen: QScreen) -> tuple[int, int, int, int]:
         int(geo.width() * dpr),
         int(geo.height() * dpr),
     )
+
+
+class CollisionChoice(StrEnum):
+    """Decyzja użytkownika przy kolizji nazwy nagrania."""
+
+    OVERWRITE = "overwrite"
+    RENAME = "rename"
+    CANCEL = "cancel"
+
+
+class _CollisionDialog(QDialog):
+    """Wybór przy zajętej nazwie: Nadpisz / Zapisz pod nową nazwą / Anuluj.
+
+    Kit nie ma generycznego dialogu wyboru (tylko file-dialogi), więc budujemy własny
+    QDialog — motyw dziedziczy z ``ThemeManager`` (świadomie NIE natywny ``QMessageBox``).
+    Domyślny (Enter) = „Zapisz pod nową nazwą" — bezpieczny, nie traci danych.
+    """
+
+    def __init__(self, name: str, proposed: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Nazwa już zajęta")
+        self._choice = CollisionChoice.CANCEL
+
+        root = QVBoxLayout(self)
+        root.addWidget(QLabel(f"Materiał «{name}» już istnieje."))
+        self._name_edit = QLineEdit(proposed)
+        self._name_edit.setToolTip("Nazwa dla nowego nagrania (przy zapisie pod nową nazwą)")
+        root.addWidget(self._name_edit)
+
+        row = QHBoxLayout()
+        overwrite_btn = QPushButton("Nadpisz")
+        overwrite_btn.setToolTip("Usuń stary materiał i zapisz nowy pod tą nazwą")
+        overwrite_btn.clicked.connect(self._choose_overwrite)
+        rename_btn = QPushButton("Zapisz pod nową nazwą")
+        rename_btn.setDefault(True)
+        rename_btn.clicked.connect(self._choose_rename)
+        cancel_btn = QPushButton("Anuluj")
+        cancel_btn.clicked.connect(self.reject)
+        row.addWidget(overwrite_btn)
+        row.addStretch(1)
+        row.addWidget(cancel_btn)
+        row.addWidget(rename_btn)
+        root.addLayout(row)
+
+    def _choose_overwrite(self) -> None:
+        self._choice = CollisionChoice.OVERWRITE
+        self.accept()
+
+    def _choose_rename(self) -> None:
+        self._choice = CollisionChoice.RENAME
+        self.accept()
+
+    def choice(self) -> CollisionChoice:
+        return self._choice
+
+    def chosen_name(self) -> str:
+        return self._name_edit.text().strip()
 
 
 class RecordDialog(QDialog):
@@ -312,12 +378,32 @@ class RecordDialog(QDialog):
 
     # ── Akcje ───────────────────────────────────────────────────────────────────
 
+    def _resolve_collision(self, out_dir: Path, title: str) -> tuple[CollisionChoice, str]:
+        """Pyta użytkownika przy zajętej nazwie; zwraca (wybór, nazwa). Seam do testów."""
+        dlg = _CollisionDialog(title, next_free_title(out_dir, title), self)
+        dlg.exec()
+        return dlg.choice(), dlg.chosen_name()
+
     def _on_start(self) -> None:
         quality = PRESETS[self._preset_keys[self._preset_combo.currentIndex()]]
         out_dir = Path(self._out_dir.get() or str(cfg_mod.default_recordings_dir()))
-        from mediaforge.core.engines.recorder import safe_filename
+        title = self._title_edit.text()
 
-        work_dir = out_dir / safe_filename(self._title_edit.text()) / "_work"
+        # Kolizja nazwy: stare nagranie o tej nazwie zmieszałoby się z nowym (segmenty +
+        # metadata/transkrypt). Pytamy: nadpisz / nowa nazwa / anuluj (bez cichej utraty danych).
+        if material_exists(out_dir, title):
+            choice, new_name = self._resolve_collision(out_dir, title)
+            if choice is CollisionChoice.CANCEL:
+                self._log.append_line("Nagrywanie anulowane — nazwa zajęta", "paused")
+                return
+            if choice is CollisionChoice.OVERWRITE:
+                discard_material_dir(out_dir, title)
+                self._log.append_line(f"Nadpisuję materiał «{title}»", "paused")
+            else:  # RENAME
+                title = new_name or next_free_title(out_dir, title)
+                self._title_edit.setText(title)
+
+        work_dir = out_dir / safe_filename(title) / "_work"
         try:
             # Walidacja regionu w GUI — nie puszczamy poza-zakresowego crop do ffmpeg.
             source = self._build_capture_source()

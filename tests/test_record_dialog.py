@@ -12,7 +12,7 @@ from pytestqt.qtbot import QtBot
 
 from mediaforge.core import config as cfg_mod
 from mediaforge.core.engines.ffmpeg_cmd import CaptureMode, CaptureSource
-from mediaforge.core.engines.recorder import RecorderEngine
+from mediaforge.core.engines.recorder import RecorderEngine, material_dir_for
 from mediaforge.core.library.recordings import RecordingStatus, RecordingStore
 from mediaforge.gui import record_dialog as rd
 
@@ -140,3 +140,82 @@ def test_start_stop_lifecycle_writes_library(dialog: rd.RecordDialog, tmp_path: 
     rows = RecordingStore(db_path).list_recordings(RecordingStatus.RECORDED)
     assert len(rows) == 1
     assert rows[0].title == "Test nagranie"
+
+
+# ── Kolizja nazwy: nadpisz / nowa nazwa / anuluj (dialog zamokowany przez _resolve_collision) ──
+
+
+def _seed_material(out_dir: Path, title: str) -> Path:
+    d = material_dir_for(out_dir, title)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "metadata.json").write_text("{}", encoding="utf-8")
+    return d
+
+
+def _fake_engine(dialog: rd.RecordDialog, db_path: Path) -> None:
+    dialog._engine = RecorderEngine(
+        encoders={"hevc_nvenc": True},
+        store=RecordingStore(db_path),
+        process_factory=_fake_factory,
+        concat_runner=_fake_concat,
+    )
+
+
+def test_collision_cancel_changes_nothing(
+    dialog: rd.RecordDialog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "out"
+    mat = _seed_material(out, "Nagranie")
+    dialog._out_dir.set(str(out))
+    dialog._title_edit.setText("Nagranie")
+    monkeypatch.setattr(dialog, "_resolve_collision", lambda o, t: (rd.CollisionChoice.CANCEL, ""))
+    dialog._on_start()
+    assert dialog._session is None  # nie wystartowało
+    assert (mat / "metadata.json").exists()  # stary materiał nietknięty
+
+
+def test_collision_overwrite_replaces_material(
+    dialog: rd.RecordDialog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "library.sqlite3"
+    _fake_engine(dialog, db_path)
+    out = tmp_path / "out"
+    mat = _seed_material(out, "Nagranie")
+    (mat / "marker.txt").write_text("old", encoding="utf-8")
+    dialog._out_dir.set(str(out))
+    dialog._title_edit.setText("Nagranie")
+    dialog._sys_audio.setChecked(False)
+    monkeypatch.setattr(
+        dialog, "_resolve_collision", lambda o, t: (rd.CollisionChoice.OVERWRITE, "")
+    )
+    dialog._on_start()
+    assert not (mat / "marker.txt").exists()  # stary folder usunięty (nadpisanie)
+    assert dialog._session is not None
+
+    dialog._on_stop()
+    rows = RecordingStore(db_path).list_recordings(RecordingStatus.RECORDED)
+    assert len(rows) == 1  # jeden materiał, bez duplikatu
+    assert rows[0].title == "Nagranie"
+
+
+def test_collision_rename_uses_new_name(
+    dialog: rd.RecordDialog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "library.sqlite3"
+    _fake_engine(dialog, db_path)
+    out = tmp_path / "out"
+    _seed_material(out, "Nagranie")
+    dialog._out_dir.set(str(out))
+    dialog._title_edit.setText("Nagranie")
+    dialog._sys_audio.setChecked(False)
+    monkeypatch.setattr(
+        dialog, "_resolve_collision", lambda o, t: (rd.CollisionChoice.RENAME, "Nagranie (2)")
+    )
+    dialog._on_start()
+    assert dialog._title_edit.text() == "Nagranie (2)"  # tytuł zmieniony na wolny
+
+    dialog._on_stop()
+    rows = RecordingStore(db_path).list_recordings(RecordingStatus.RECORDED)
+    titles = {r.title for r in rows}
+    assert "Nagranie (2)" in titles  # zapisane pod nową nazwą
+    assert (out / "Nagranie" / "metadata.json").exists()  # stary materiał nietknięty
