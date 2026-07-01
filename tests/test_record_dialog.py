@@ -6,11 +6,12 @@ from pathlib import Path
 
 import pytest
 from chodzkos_gui_kit.qt.widgets import LogView, PathEntry
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 
 from mediaforge.core import config as cfg_mod
-from mediaforge.core.engines.ffmpeg_cmd import CaptureMode
+from mediaforge.core.engines.ffmpeg_cmd import CaptureMode, CaptureSource
 from mediaforge.core.engines.recorder import RecorderEngine
 from mediaforge.core.library.recordings import RecordingStatus, RecordingStore
 from mediaforge.gui import record_dialog as rd
@@ -56,20 +57,45 @@ def test_dialog_uses_kit_widgets_and_presets(dialog: rd.RecordDialog) -> None:
     assert "recording" in rd.RECORD_LEVEL_COLORS  # status nagrywania ma kolor
 
 
-def test_build_capture_source_modes(dialog: rd.RecordDialog) -> None:
+def test_full_monitor_has_no_region(dialog: rd.RecordDialog) -> None:
     dialog._mode_combo.setCurrentIndex(0)
-    assert dialog._build_capture_source().mode is CaptureMode.FULLSCREEN
-
-    dialog._mode_combo.setCurrentIndex(2)
-    dialog._window_edit.setText("Wykład")
     src = dialog._build_capture_source()
-    assert src.mode is CaptureMode.WINDOW
-    assert src.window_title == "Wykład"
+    assert src.mode is CaptureMode.FULLSCREEN
+    assert src.region is None  # cały monitor → bez crop
 
-    dialog._mode_combo.setCurrentIndex(3)
-    dialog._region_edit.setText("10,20,800,600")
+
+def test_region_mode_parses_subrect(dialog: rd.RecordDialog) -> None:
+    # Region względem monitora — bierzemy podprostokąt mieszczący się w realnej rozdzielczości.
+    _x, _y, mon_w, mon_h = rd._physical_geometry(QGuiApplication.screens()[0])
+    rw, rh = mon_w // 2, mon_h // 2
+    dialog._mode_combo.setCurrentIndex(1)
+    dialog._region_edit.setText(f"0,0,{rw},{rh}")
     src = dialog._build_capture_source()
-    assert src.region == (10, 20, 800, 600)
+    assert src.mode is CaptureMode.REGION
+    assert src.region == (0, 0, rw, rh)
+
+
+def test_region_outside_monitor_is_rejected(dialog: rd.RecordDialog) -> None:
+    dialog._mode_combo.setCurrentIndex(1)
+    dialog._region_edit.setText("0,0,99999,99999")  # poza każdym realnym monitorem
+    with pytest.raises(ValueError, match="wykracza poza monitor"):
+        dialog._build_capture_source()
+
+
+def test_start_aborts_on_invalid_region(dialog: rd.RecordDialog) -> None:
+    dialog._mode_combo.setCurrentIndex(1)
+    dialog._region_edit.setText("oops")  # niepoprawny format
+    dialog._on_start()
+    assert dialog._session is None  # nie wystartowało
+    assert "region" in dialog._log.toPlainText().lower()
+
+
+def test_window_capture_removed(dialog: rd.RecordDialog) -> None:
+    # ddagrab nie zna okien — tryb i pole usunięte z modelu i GUI (brak funkcji-widma).
+    assert not hasattr(CaptureMode, "WINDOW")
+    assert not hasattr(CaptureSource(), "window_title")
+    assert not hasattr(dialog, "_window_edit")
+    assert dialog._mode_combo.count() == 2  # tylko: cały monitor + region
 
 
 def test_audio_config_reflects_checkboxes(dialog: rd.RecordDialog) -> None:

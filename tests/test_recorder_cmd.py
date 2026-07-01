@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from mediaforge.core.engines.base import QualityOption
 from mediaforge.core.engines.ffmpeg_cmd import (
     PRESETS,
@@ -9,6 +11,7 @@ from mediaforge.core.engines.ffmpeg_cmd import (
     CaptureMode,
     CaptureSource,
     build_record_command,
+    build_video_filter,
     estimate_size_mb,
     select_video_encoder,
 )
@@ -82,16 +85,53 @@ def test_fullscreen_uses_ddagrab_output() -> None:
 
 
 def test_monitor_selects_output_idx() -> None:
-    # Wybór monitora (GUI: mode=REGION, monitor=N) → output_idx ddagrab, nie offset/region.
+    # Wybór monitora → output_idx ddagrab (bez region = cały monitor, bez crop).
     cmd = build_record_command(
-        source=CaptureSource(mode=CaptureMode.REGION, monitor=1, region=(100, 200, 1280, 720)),
+        source=CaptureSource(mode=CaptureMode.FULLSCREEN, monitor=1),
         audio=AudioConfig(system_audio=False),
         quality=PRESETS["standard"],
         encoders=_ALL_ENCODERS,
         segment_pattern="/tmp/seg_%03d.mkv",
     )
     assert _has_substr(cmd, "ddagrab=output_idx=1:")
+    assert "crop=" not in _arg_value(cmd, "-vf")  # cały monitor → bez crop
     assert "-offset_x" not in cmd and "-video_size" not in cmd
+
+
+def test_region_adds_crop_to_filter() -> None:
+    cmd = build_record_command(
+        source=CaptureSource(mode=CaptureMode.REGION, monitor=0, region=(100, 200, 1280, 720)),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["standard"],
+        encoders=_ALL_ENCODERS,
+        segment_pattern="/tmp/seg_%03d.mkv",
+    )
+    assert "crop=1280:720:100:200" in _arg_value(cmd, "-vf")
+
+
+# ── Filtr wideo (hwdownload + warunkowy crop) ──────────────────────────────────
+
+
+def test_filter_no_region_has_no_crop() -> None:
+    vf = build_video_filter(None)
+    assert vf == "hwdownload,format=bgra,format=yuv420p"
+
+
+def test_filter_region_inserts_crop_between_formats() -> None:
+    vf = build_video_filter((10, 20, 800, 600))
+    assert vf == "hwdownload,format=bgra,crop=800:600:10:20,format=yuv420p"
+    # crop MIĘDZY format=bgra a format=yuv420p (po pobraniu z GPU, przed yuv420p).
+    assert vf.index("format=bgra") < vf.index("crop=") < vf.index("format=yuv420p")
+
+
+def test_filter_rounds_odd_dimensions_down() -> None:
+    # yuv420p wymaga parzystych w/h → 1281x721 → 1280x720 (offset też parzysty).
+    assert "crop=1280:720:0:0" in build_video_filter((1, 1, 1281, 721))
+
+
+def test_filter_degenerate_region_raises() -> None:
+    with pytest.raises(ValueError, match="niepoprawny"):
+        build_video_filter((0, 0, 100, 1))  # h=1 → po _even h=0
 
 
 def test_video_pipeline_ddagrab_nvenc_cfr() -> None:

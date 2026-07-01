@@ -6,8 +6,9 @@ logika nagrywania (FFmpeg, segmentacja, odzysk) jest w ``core`` (Qt-free); tu zo
 zbieranie opcji, timer/rozmiar przez ``QTimer`` i sterowanie sesją (Start/Pauza/Stop).
 
 Wybór monitora trafia jako ``output_idx`` do ``ddagrab`` (capture per-output). Geometria
-``QScreen`` w pikselach fizycznych (x ``devicePixelRatio``) służy do podglądu/rozmiaru
-i trybu „Region" (ddagrab łapie cały monitor — pod-region nie jest egzekwowany).
+``QScreen`` w pikselach fizycznych (x ``devicePixelRatio``) daje rozdzielczość monitora —
+do walidacji regionu (crop) i szacowania rozmiaru. Tryb „Okno (po tytule)" usunięty:
+ddagrab nie zna okien.
 """
 
 from __future__ import annotations
@@ -48,10 +49,9 @@ from mediaforge.core.library.recordings import RecordingStore
 # Statusy nagrywania dla LogView (klucze ról palety — przeżywają zmianę motywu).
 RECORD_LEVEL_COLORS = {"recording": "red", "paused": "accent2", "saved": "accent"}
 
+# ddagrab łapie wybrany monitor (output_idx); region = crop wewnątrz niego. Brak trybu okna.
 _MODE_LABELS: list[tuple[str, CaptureMode]] = [
-    ("Cały pulpit", CaptureMode.FULLSCREEN),
-    ("Wybrany monitor", CaptureMode.REGION),
-    ("Okno (po tytule)", CaptureMode.WINDOW),
+    ("Cały monitor", CaptureMode.FULLSCREEN),
     ("Region (x, y, szer, wys)", CaptureMode.REGION),
 ]
 
@@ -104,21 +104,20 @@ class RecordDialog(QDialog):
         for label, _mode in _MODE_LABELS:
             self._mode_combo.addItem(label)
         self._mode_combo.currentIndexChanged.connect(self._sync_controls)
-        self._mode_combo.setToolTip("Co nagrywać: pulpit, monitor, okno albo region")
+        self._mode_combo.setToolTip("Co nagrywać: cały monitor albo region wewnątrz niego")
         form.addRow("Źródło:", self._mode_combo)
 
         self._monitor_combo = QComboBox()
         for i, screen in enumerate(QGuiApplication.screens()):
             _x, _y, w, h = _physical_geometry(screen)
             self._monitor_combo.addItem(f"Monitor {i + 1} — {w}x{h}")
+        self._monitor_combo.setToolTip("Monitor do nagrania (output_idx ddagrab)")
         form.addRow("Monitor:", self._monitor_combo)
 
-        self._window_edit = QLineEdit()
-        self._window_edit.setPlaceholderText("Dokładny tytuł okna")
-        form.addRow("Okno:", self._window_edit)
-
         self._region_edit = QLineEdit()
-        self._region_edit.setPlaceholderText("x,y,szerokość,wysokość — np. 0,0,1920,1080")
+        self._region_edit.setPlaceholderText(
+            "x,y,szerokość,wysokość względem monitora — np. 0,0,1920,1080"
+        )
         form.addRow("Region:", self._region_edit)
 
         self._preset_combo = QComboBox()
@@ -216,9 +215,8 @@ class RecordDialog(QDialog):
     def _sync_controls(self) -> None:
         """Włącza/wyłącza pola zależne od trybu źródła, audio i stanu sesji."""
         idx = self._current_mode_index()
-        self._monitor_combo.setEnabled(idx == 1)
-        self._window_edit.setEnabled(idx == 2)
-        self._region_edit.setEnabled(idx == 3)
+        self._monitor_combo.setEnabled(True)  # zawsze: wybór monitora (output_idx) dla obu trybów
+        self._region_edit.setEnabled(idx == 1)
         self._sys_device.setEnabled(self._sys_audio.isChecked())
         self._mic_device.setEnabled(self._mic_audio.isChecked())
         self._mix_audio.setEnabled(self._sys_audio.isChecked() and self._mic_audio.isChecked())
@@ -238,17 +236,34 @@ class RecordDialog(QDialog):
     # ── Budowanie opcji z UI ────────────────────────────────────────────────────
 
     def _build_capture_source(self) -> CaptureSource:
-        idx = self._current_mode_index()
-        if idx == 0:
-            return CaptureSource(mode=CaptureMode.FULLSCREEN)
-        if idx == 1:
-            screens = QGuiApplication.screens()
-            mon = self._monitor_combo.currentIndex()
-            region = _physical_geometry(screens[mon]) if 0 <= mon < len(screens) else None
-            return CaptureSource(mode=CaptureMode.REGION, monitor=mon, region=region)
-        if idx == 2:
-            return CaptureSource(mode=CaptureMode.WINDOW, window_title=self._window_edit.text())
-        return CaptureSource(mode=CaptureMode.REGION, region=self._parse_region())
+        """Buduje źródło z UI. Region (gdy wybrany) jest walidowany — może rzucić ValueError."""
+        mon = max(0, self._monitor_combo.currentIndex())
+        if self._current_mode_index() == 0:
+            return CaptureSource(mode=CaptureMode.FULLSCREEN, monitor=mon, region=None)
+        return CaptureSource(
+            mode=CaptureMode.REGION, monitor=mon, region=self._validated_region(mon)
+        )
+
+    def _validated_region(self, monitor: int) -> tuple[int, int, int, int]:
+        """Region z UI sprawdzony, że mieści się w monitorze (crop poza zakres = błąd ffmpeg).
+
+        Współrzędne są WZGLĘDEM wybranego monitora (0,0 = jego lewy-górny róg).
+        """
+        region = self._parse_region()
+        if region is None:
+            raise ValueError("Region: podaj x,y,szerokość,wysokość (np. 0,0,1920,1080)")
+        x, y, w, h = region
+        if w <= 0 or h <= 0:
+            raise ValueError("Region: szerokość i wysokość muszą być dodatnie")
+        screens = QGuiApplication.screens()
+        if 0 <= monitor < len(screens):
+            _mx, _my, mon_w, mon_h = _physical_geometry(screens[monitor])
+            if x < 0 or y < 0 or x + w > mon_w or y + h > mon_h:
+                raise ValueError(
+                    f"Region {x},{y},{w},{h} wykracza poza monitor {mon_w}x{mon_h} "
+                    "(współrzędne są względem wybranego monitora)"
+                )
+        return region
 
     def _parse_region(self) -> tuple[int, int, int, int] | None:
         parts = [p.strip() for p in self._region_edit.text().split(",")]
@@ -298,8 +313,14 @@ class RecordDialog(QDialog):
         from mediaforge.core.engines.recorder import safe_filename
 
         work_dir = out_dir / safe_filename(self._title_edit.text()) / "_work"
+        try:
+            # Walidacja regionu w GUI — nie puszczamy poza-zakresowego crop do ffmpeg.
+            source = self._build_capture_source()
+        except ValueError as exc:
+            self._log.append_line(str(exc), "error")
+            return
         self._session = self._engine.new_session(
-            source=self._build_capture_source(),
+            source=source,
             audio=self._build_audio_config(),
             quality=quality,
             work_dir=work_dir,
