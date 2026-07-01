@@ -12,15 +12,18 @@ import dataclasses
 from pathlib import Path
 
 from chodzkos_gui_kit.qt.widgets import LogView
-from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtCore import QPoint, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -135,6 +138,11 @@ class LibraryWidget(QWidget):
         self._list = QListWidget()
         self._list.setMinimumWidth(220)
         self._list.currentRowChanged.connect(self._on_select)
+        self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._list.customContextMenuRequested.connect(self._on_list_menu)
+        delete_sc = QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), self._list)
+        delete_sc.setContext(Qt.ShortcutContext.WidgetShortcut)
+        delete_sc.activated.connect(self._on_delete)
         splitter.addWidget(self._list)
         splitter.addWidget(self._build_details())
         splitter.setStretchFactor(1, 1)
@@ -194,6 +202,10 @@ class LibraryWidget(QWidget):
         self._open_btn.clicked.connect(self._open_folder)
         actions.addWidget(self._open_btn)
         actions.addStretch(1)
+        self._delete_btn = QPushButton("Usuń")
+        self._delete_btn.setToolTip("Trwale usuń materiał (nagranie + transkrypt + metadane)")
+        self._delete_btn.clicked.connect(self._on_delete)
+        actions.addWidget(self._delete_btn)
         col.addLayout(actions)
         col.addStretch(1)
         self._set_details_enabled(False)
@@ -301,6 +313,54 @@ class LibraryWidget(QWidget):
         if self._current is not None:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._current[1])))
 
+    # ── Usuwanie ──────────────────────────────────────────────────────────────
+
+    def _on_list_menu(self, pos: QPoint) -> None:
+        """Menu kontekstowe listy — pozycja „Usuń" dla klikniętego materiału."""
+        if self._list.itemAt(pos) is None:
+            return
+        menu = QMenu(self._list)
+        menu.addAction("Usuń", self._on_delete)
+        menu.exec(self._list.mapToGlobal(pos))
+
+    def _confirm_delete(self, title: str) -> bool:
+        """Potwierdzenie z konsekwencjami; domyślny fokus = Anuluj (bezpieczny). Seam do testów."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Usunąć materiał?")
+        root = QVBoxLayout(dlg)
+        label = QLabel(
+            f"Usunąć materiał «{title}»?\n\nZostaną trwale usunięte: nagranie, transkrypt "
+            "i metadane. Tej operacji nie można cofnąć."
+        )
+        label.setWordWrap(True)
+        root.addWidget(label)
+        buttons = QDialogButtonBox()
+        delete_btn = buttons.addButton("Usuń", QDialogButtonBox.ButtonRole.DestructiveRole)
+        cancel_btn = buttons.addButton("Anuluj", QDialogButtonBox.ButtonRole.RejectRole)
+        delete_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        cancel_btn.setDefault(True)
+        cancel_btn.setFocus()
+        root.addWidget(buttons)
+        return dlg.exec() == QDialog.DialogCode.Accepted
+
+    def _on_delete(self) -> None:
+        """Usuwa bieżący materiał (folder + indeks) po potwierdzeniu; guard jobów jest w core."""
+        if self._current is None:
+            return
+        rec_id, _folder, meta = self._current
+        if not self._confirm_delete(meta.title):
+            return
+        try:
+            self._store.delete_material(rec_id, cfg_mod.default_recordings_dir())
+        except (ValueError, OSError) as exc:  # guard/path-safety (ValueError) lub błąd rmtree
+            self._log.append_line(f"Nie usunięto «{meta.title}»: {exc}", "error")
+            return
+        self._log.append_line(f"Usunięto «{meta.title}»", "done")
+        self._current = None
+        self._clear_details()
+        self.refresh_all()
+
     # ── Pomocnicze ────────────────────────────────────────────────────────────
 
     def _open_import(self) -> None:
@@ -369,6 +429,7 @@ class LibraryWidget(QWidget):
             self._save_btn,
             self._transcribe_btn,
             self._open_btn,
+            self._delete_btn,
         ):
             widget.setEnabled(enabled)
 

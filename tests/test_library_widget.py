@@ -114,3 +114,58 @@ def test_import_dialog_constructs(
     # Bez plików import nie kolejkuje (loguje ostrzeżenie).
     dialog._on_import()
     assert dialog.enqueued_count == 0
+
+
+# ── Usuwanie materiału z biblioteki ───────────────────────────────────────────
+
+
+def test_delete_confirmed_removes_material(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = _isolate(monkeypatch, tmp_path)
+    folder = _seed(db, tmp_path, "Do usunięcia", category="X", tags=[])
+    widget = LibraryWidget()
+    qtbot.addWidget(widget)
+    widget._list.setCurrentRow(0)
+
+    monkeypatch.setattr(widget, "_confirm_delete", lambda title: True)
+    widget._on_delete()
+
+    assert widget._list.count() == 0  # zniknął z listy
+    assert not folder.exists()  # folder usunięty z dysku
+    assert widget._current is None
+    assert "Usunięto" in widget._log.toPlainText()
+
+
+def test_delete_cancelled_keeps_material(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = _isolate(monkeypatch, tmp_path)
+    folder = _seed(db, tmp_path, "Zostaje", category="X", tags=[])
+    widget = LibraryWidget()
+    qtbot.addWidget(widget)
+    widget._list.setCurrentRow(0)
+
+    monkeypatch.setattr(widget, "_confirm_delete", lambda title: False)  # Anuluj
+    widget._on_delete()
+
+    assert widget._list.count() == 1 and folder.exists()  # nic nie ruszone
+
+
+def test_delete_with_active_job_shows_error(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = _isolate(monkeypatch, tmp_path)
+    folder = _seed(db, tmp_path, "W transkrypcji", category="X", tags=[])
+    rec_id = RecordingStore(db).list_materials()[0][0]
+    JobStore(db).enqueue("transcribe", recording_id=rec_id)  # aktywny job (pending)
+
+    widget = LibraryWidget()
+    qtbot.addWidget(widget)
+    widget._list.setCurrentRow(0)
+
+    monkeypatch.setattr(widget, "_confirm_delete", lambda title: True)
+    widget._on_delete()
+
+    assert widget._list.count() == 1 and folder.exists()  # guard: nic nie usunięte
+    assert "aktywne zadanie" in widget._log.toPlainText()

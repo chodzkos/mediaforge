@@ -9,6 +9,7 @@ a :meth:`RecordingStore.to_metadata` czyta je z powrotem (round-trip folder ↔ 
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -151,6 +152,42 @@ class RecordingStore:
                 "UPDATE recordings SET status = ? WHERE id = ?",
                 (status.value, recording_id),
             )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def delete_material(self, recording_id: int, library_root: Path) -> None:
+        """Usuwa materiał: NAJPIERW folder (``rmtree``), POTEM wiersz (FK kaskada sprząta joby).
+
+        Kolejność folder→wiersz = spójność: gdy ``rmtree`` padnie (plik otwarty w odtwarzaczu,
+        NAS offline), wyjątek propaguje, a wpis ZOSTAJE — baza nie twierdzi, że usunęła coś,
+        co leży na dysku. Odmawia (``ValueError``, nic nie ruszając), gdy:
+
+        - materiał ma aktywny job (``pending``/``running``) — ``rmtree`` spod działającego
+          whisper-cli = crash handlera w połowie zapisu;
+        - folder jest poza ``library_root`` (path-safety — nigdy nie ``rmtree`` spoza
+          biblioteki, nawet przy uszkodzonym wpisie ``folder``).
+        """
+        conn = connect(self.path)
+        try:
+            row = conn.execute(
+                "SELECT folder FROM recordings WHERE id = ?", (recording_id,)
+            ).fetchone()
+            if row is None or row["folder"] is None:
+                raise ValueError(f"Materiał #{recording_id} nie istnieje")
+            active = conn.execute(
+                "SELECT COUNT(*) AS n FROM jobs WHERE recording_id = ? "
+                "AND status IN ('pending', 'running')",
+                (recording_id,),
+            ).fetchone()
+            if active["n"]:
+                raise ValueError("Materiał ma aktywne zadanie (transkrypcja w toku)")
+            folder = Path(str(row["folder"])).resolve()
+            if not folder.is_relative_to(library_root.resolve()):
+                raise ValueError(f"Folder materiału jest poza biblioteką: {folder}")
+            if folder.exists():
+                shutil.rmtree(folder)  # ignore_errors=False → błąd widoczny, wpis zostaje
+            conn.execute("DELETE FROM recordings WHERE id = ?", (recording_id,))
             conn.commit()
         finally:
             conn.close()
