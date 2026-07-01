@@ -219,3 +219,14 @@ def test_collision_rename_uses_new_name(
     titles = {r.title for r in rows}
     assert "Nagranie (2)" in titles  # zapisane pod nową nazwą
     assert (out / "Nagranie" / "metadata.json").exists()  # stary materiał nietknięty
+
+
+def test_out_of_library_warning_toggles(dialog: rd.RecordDialog, tmp_path: Path) -> None:
+    # Fixture: default_recordings_dir = tmp_path/"out". Wewnątrz → notka ukryta, poza → widoczna.
+    dialog._out_dir.set(str(tmp_path / "out" / "sesja"))
+    dialog._update_out_of_lib_warn()
+    assert dialog._out_of_lib_warn.isHidden()
+
+    dialog._out_dir.set(str(tmp_path / "gdzie_indziej"))
+    dialog._update_out_of_lib_warn()
+    assert not dialog._out_of_lib_warn.isHidden()  # katalog poza biblioteką → ostrzeżenie

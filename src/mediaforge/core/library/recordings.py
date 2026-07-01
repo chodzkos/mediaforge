@@ -48,6 +48,16 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def is_inside_library(path: Path, library_root: Path) -> bool:
+    """Czy ``path`` leży w bibliotece (pod ``library_root``) — JEDNA definicja „w bibliotece".
+
+    Wspólna dla path-safety usuwania (:meth:`RecordingStore.delete_material`) i ostrzeżenia
+    GUI o zapisie poza rootem. ``resolve()`` rozwija symlinki/``..``, więc porównanie jest
+    realne (nie leksykalne).
+    """
+    return path.resolve().is_relative_to(library_root.resolve())
+
+
 def _row_to_recording(row: Row) -> Recording:
     return Recording(
         id=int(row["id"]),
@@ -182,9 +192,12 @@ class RecordingStore:
             ).fetchone()
             if active["n"]:
                 raise ValueError("Materiał ma aktywne zadanie (transkrypcja w toku)")
-            folder = Path(str(row["folder"])).resolve()
-            if not folder.is_relative_to(library_root.resolve()):
-                raise ValueError(f"Folder materiału jest poza biblioteką: {folder}")
+            folder = Path(str(row["folder"]))
+            if not is_inside_library(folder, library_root):
+                raise ValueError(
+                    f"Materiał leży poza biblioteką ({folder}) — aplikacja nim nie zarządza; "
+                    "usuń folder ręcznie."
+                )
             if folder.exists():
                 shutil.rmtree(folder)  # ignore_errors=False → błąd widoczny, wpis zostaje
             conn.execute("DELETE FROM recordings WHERE id = ?", (recording_id,))

@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from mediaforge.core.library.db import Database
-from mediaforge.core.library.recordings import RecordingStatus, RecordingStore
+from mediaforge.core.library.recordings import (
+    RecordingStatus,
+    RecordingStore,
+    is_inside_library,
+)
 
 
 def _store(tmp_path: Path) -> RecordingStore:
@@ -134,9 +138,22 @@ def test_delete_path_safety_refuses_outside_root(tmp_path: Path) -> None:
     write_metadata(outside, meta)
     rec_id = store.upsert_material(outside, meta)
 
-    with pytest.raises(ValueError, match="poza biblioteką"):
+    with pytest.raises(ValueError) as exc:
         store.delete_material(rec_id, lib)
+    # Komunikat path-safety: ścieżka + „usuń folder ręcznie" (odróżnia od guardu joba).
+    assert "outside" in str(exc.value) and "usuń folder ręcznie" in str(exc.value)
+    assert "aktywne zadanie" not in str(exc.value)  # inny powód = inny komunikat
     assert outside.exists() and len(store.list_materials()) == 1  # nic nie ruszone
+
+
+def test_is_inside_library(tmp_path: Path) -> None:
+    root = tmp_path / "lib"
+    root.mkdir()
+    assert is_inside_library(root / "Wyklad", root) is True
+    assert is_inside_library(root, root) is True  # sam root liczy się jako „w bibliotece"
+    assert is_inside_library(tmp_path / "gdzie_indziej" / "M", root) is False
+    # resolve(): „..” wychodzące poza root wykrywane realnie (nie leksykalnie).
+    assert is_inside_library(root / "sub" / ".." / ".." / "obok", root) is False
 
 
 def test_delete_then_rescan_does_not_return(tmp_path: Path) -> None:

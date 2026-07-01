@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from chodzkos_gui_kit.qt.theme import current_palette
 from chodzkos_gui_kit.qt.widgets import FileList, FileListTexts, LogView, PathEntry
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QLabel,
     QLineEdit,
     QVBoxLayout,
     QWidget,
@@ -26,6 +28,8 @@ from mediaforge.core.engines.import_engine import SUPPORTED_EXTS
 from mediaforge.core.jobs import JobStore
 from mediaforge.core.jobs.handlers import JOB_IMPORT
 from mediaforge.core.library.db import Database
+from mediaforge.core.library.recordings import is_inside_library
+from mediaforge.gui.record_dialog import OUT_OF_LIBRARY_WARNING
 
 _FILELIST_TEXTS = FileListTexts(
     files="Pliki",
@@ -66,6 +70,13 @@ class ImportDialog(QDialog):
         self._dest = PathEntry(mode="dir", placeholder="Katalog biblioteki")
         self._dest.set(str(cfg_mod.default_recordings_dir()))
         form.addRow("Biblioteka:", self._dest)
+        # Import do katalogu poza biblioteką jest dozwolony, ale jawnie oznaczony (ta sama notka).
+        self._out_of_lib_warn = QLabel(OUT_OF_LIBRARY_WARNING)
+        self._out_of_lib_warn.setWordWrap(True)
+        self._out_of_lib_warn.setStyleSheet(f"color: {current_palette().amber};")
+        form.addRow("", self._out_of_lib_warn)
+        self._dest.path_changed.connect(self._update_out_of_lib_warn)
+        self._update_out_of_lib_warn()
         self._category = QLineEdit()
         self._category.setPlaceholderText("np. Konferencja 2026")
         form.addRow("Kategoria:", self._category)
@@ -86,6 +97,13 @@ class ImportDialog(QDialog):
         ok.clicked.connect(self._on_import)
         buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(self.reject)
         root.addWidget(buttons)
+
+    def _update_out_of_lib_warn(self) -> None:
+        """Notka, gdy katalog docelowy importu jest poza kanoniczną biblioteką (znika wewnątrz)."""
+        dest = Path(self._dest.get() or str(cfg_mod.default_recordings_dir()))
+        self._out_of_lib_warn.setVisible(
+            not is_inside_library(dest, cfg_mod.default_recordings_dir())
+        )
 
     def _on_import(self) -> None:
         files = self._files.files()

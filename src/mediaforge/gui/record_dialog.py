@@ -54,10 +54,16 @@ from mediaforge.core.engines.recorder import (
     safe_filename,
 )
 from mediaforge.core.library.db import Database
-from mediaforge.core.library.recordings import RecordingStore
+from mediaforge.core.library.recordings import RecordingStore, is_inside_library
 
 # Statusy nagrywania dla LogView (klucze ról palety — przeżywają zmianę motywu).
 RECORD_LEVEL_COLORS = {"recording": "red", "paused": "accent2", "saved": "accent"}
+
+# Ostrzeżenie (współdzielone z import_dialog) o zapisie poza kanoniczną biblioteką.
+OUT_OF_LIBRARY_WARNING = (
+    "Katalog poza biblioteką — materiał nie będzie objęty skanowaniem („Przeskanuj” go nie "
+    "odbuduje po awarii bazy) ani usuwaniem z aplikacji. Zarządzasz nim ręcznie."
+)
 
 # ddagrab łapie wybrany monitor (output_idx); region = crop wewnątrz niego. Brak trybu okna.
 _MODE_LABELS: list[tuple[str, CaptureMode]] = [
@@ -244,6 +250,14 @@ class RecordDialog(QDialog):
         self._out_dir.set(str(cfg_mod.default_recordings_dir()))
         form.addRow("Zapis do:", self._out_dir)
 
+        # Zapis poza biblioteką jest dozwolony (elastyczność), ale nie cichy — jawna notka.
+        self._out_of_lib_warn = QLabel(OUT_OF_LIBRARY_WARNING)
+        self._out_of_lib_warn.setWordWrap(True)
+        self._out_of_lib_warn.setStyleSheet(f"color: {current_palette().amber};")
+        form.addRow("", self._out_of_lib_warn)
+        self._out_dir.path_changed.connect(self._update_out_of_lib_warn)
+        self._update_out_of_lib_warn()
+
         root.addLayout(form)
 
         status = QHBoxLayout()
@@ -377,6 +391,13 @@ class RecordDialog(QDialog):
         )
 
     # ── Akcje ───────────────────────────────────────────────────────────────────
+
+    def _update_out_of_lib_warn(self) -> None:
+        """Pokazuje notkę, gdy katalog zapisu jest poza kanoniczną biblioteką (znika wewnątrz)."""
+        out = Path(self._out_dir.get() or str(cfg_mod.default_recordings_dir()))
+        self._out_of_lib_warn.setVisible(
+            not is_inside_library(out, cfg_mod.default_recordings_dir())
+        )
 
     def _resolve_collision(self, out_dir: Path, title: str) -> tuple[CollisionChoice, str]:
         """Pyta użytkownika przy zajętej nazwie; zwraca (wybór, nazwa). Seam do testów."""
