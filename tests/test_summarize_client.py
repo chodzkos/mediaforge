@@ -61,12 +61,13 @@ def test_parse_gateway_error_field() -> None:
 
 def test_parse_garbage_and_empty() -> None:
     """Śmieci/niepoprawny kształt oraz pusta treść → GatewayError."""
-    for bad in (
+    bad_inputs: tuple[object, ...] = (
         [],
         "nie-mapa",
         {},
         {"choices": []},
         {"choices": [{"message": {"content": "   "}}]},
-    ):
+    )
+    for bad in bad_inputs:
         with pytest.raises(GatewayError):
             parse_summary_response(bad)

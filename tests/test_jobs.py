@@ -119,6 +119,36 @@ def test_gpu_lane_serializes_across_types(tmp_path: Path) -> None:
     assert active["max"] == 1  # nigdy dwa modele GPU naraz, NIEZALEŻNIE od typu
 
 
+def test_default_routes_serialize_transcribe_and_summarize_on_gpu(tmp_path: Path) -> None:
+    """DEFAULT_ROUTES: transkrypcja i streszczenie LOKALNE dzielą linię GPU → jeden model w VRAM.
+
+    Sprawdza „tę jedną linię" z S4 (DEFAULT_ROUTES[JOB_SUMMARIZE] = GPU_LANE): streszczenie
+    modelem lokalnym nie ładuje się do VRAM równolegle z transkrypcją (max == 1).
+    """
+    from mediaforge.core.jobs.handlers import (
+        DEFAULT_LANES,
+        DEFAULT_ROUTES,
+        JOB_SUMMARIZE,
+        JOB_TRANSCRIBE,
+    )
+
+    store = _store(tmp_path)
+    lock = threading.Lock()
+    active = {"now": 0, "max": 0}
+    handler = _vram_guard_handler(lock, active)
+    queue = JobQueue(store, workers=4, lanes=DEFAULT_LANES, routes=DEFAULT_ROUTES)
+    queue.register(JOB_TRANSCRIBE, handler)
+    queue.register(JOB_SUMMARIZE, handler)
+    # Bez payload['lane'] → obie trasy typu wskazują GPU (streszczenie lokalne).
+    store.enqueue(JOB_TRANSCRIBE)
+    store.enqueue(JOB_SUMMARIZE)
+    store.enqueue(JOB_TRANSCRIBE)
+    store.enqueue(JOB_SUMMARIZE)
+
+    assert queue.process_pending() == 4
+    assert active["max"] == 1
+
+
 def test_queue_marks_failure_on_handler_exception(tmp_path: Path) -> None:
     store = _store(tmp_path)
 

@@ -47,6 +47,8 @@ def doctor(as_json: bool = typer.Option(False, "--json")) -> None:
         whispercpp_path=config.get_whispercpp_path(cfg),
         litellm_base_url=config.get_litellm_base_url(cfg),
         whisper_model=config.get_whisper_model(cfg),
+        summary_model_local=config.get_summary_model_local(cfg),
+        summary_model_cloud=config.get_summary_model_cloud(cfg),
         probe_whisper=True,
     )
     if as_json:

@@ -72,10 +72,18 @@ class JobQueue:
         """Rejestruje handler dla danego typu zadania."""
         self._handlers[job_type] = handler
 
-    def _lane_of(self, job_type: str) -> str:
-        """Nazwa linii dla typu zadania (trasa albo wspólna pula). Wspólna linia GPU =
-        globalna serializacja modeli (transkrypcja + przyszłe VLM/LLM na tej samej linii)."""
-        return self._routes.get(job_type, _DEFAULT_LANE)
+    def _lane_of(self, job: Job) -> str:
+        """Nazwa linii zadania: override z ``payload['lane']`` > trasa typu > wspólna pula.
+
+        Zadanie może wskazać linię jawnie w payloadzie (decyzja w momencie enqueue — np.
+        streszczenie chmurowe idzie na linię I/O, żeby nie blokować GPU, mimo że domyślna
+        trasa typu ``summarize`` to linia GPU dla wariantu lokalnego). Bez override obowiązuje
+        trasa po typie: wspólna linia GPU = globalna serializacja modeli (transkrypcja +
+        VLM/LLM na tej samej linii)."""
+        lane = job.payload.get("lane")
+        if isinstance(lane, str) and lane:
+            return lane
+        return self._routes.get(job.job_type, _DEFAULT_LANE)
 
     def _lane_workers(self, lane: str) -> int:
         return self._lanes.get(lane, self._workers)
@@ -111,7 +119,7 @@ class JobQueue:
             return 0
         groups: dict[str, list[Job]] = defaultdict(list)
         for job in jobs:
-            groups[self._lane_of(job.job_type)].append(job)
+            groups[self._lane_of(job)].append(job)
         for lane, group in groups.items():
             with ThreadPoolExecutor(max_workers=self._lane_workers(lane)) as pool:
                 list(pool.map(self._run_job, group))
@@ -131,7 +139,7 @@ class JobQueue:
                     if job is None:
                         self._stop.wait(poll_interval)
                         continue
-                    lane = self._lane_of(job.job_type)
+                    lane = self._lane_of(job)
                     pool = executors.get(lane)
                     if pool is None:
                         pool = ThreadPoolExecutor(max_workers=self._lane_workers(lane))

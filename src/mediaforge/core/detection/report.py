@@ -32,6 +32,8 @@ def check_all(
     whispercpp_path: str | None = None,
     litellm_base_url: str | None = None,
     whisper_model: str | None = None,
+    summary_model_local: str | None = None,
+    summary_model_cloud: str | None = None,
     *,
     probe_whisper: bool = False,
 ) -> dict[str, Any]:
@@ -78,6 +80,12 @@ def check_all(
             "note": profile.note,
         },
         "litellm": litellm,
+        # Skonfigurowane modele streszczeń (z configu; None = nieustawiony/brak trasy chmurowej).
+        # Sonda gatewaya nie zmienia się — to tylko wypis konfiguracji obok stanu gatewaya.
+        "summary": {
+            "model_local": summary_model_local,
+            "model_cloud": summary_model_cloud,
+        },
         "providers": tools.check_providers(),
     }
 
@@ -161,6 +169,12 @@ def render_report(report: dict[str, Any]) -> str:
         lines.append(f"             → {_HINTS['litellm']}")
     elif ll.get("models"):
         lines.append(f"             modele: {', '.join(ll['models'][:8])}")
+    # Skonfigurowane modele streszczeń (obok stanu gatewaya): co pójdzie lokalnie / w chmurę.
+    summary = report.get("summary", {})
+    lines.append(
+        f"             streszczenia: lokalny {summary.get('model_local') or '—'} · "
+        f"chmura {summary.get('model_cloud') or '— (tylko lokalnie)'}"
+    )
 
     prov = report.get("providers", {})
     lines.append("Dostawcy:    " + ", ".join(f"{k} {_mark(v)}" for k, v in prov.items()))
