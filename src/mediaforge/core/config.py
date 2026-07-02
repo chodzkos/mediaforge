@@ -46,6 +46,11 @@ _WHISPER_MODEL_KEY = "whisper_model"  # ścieżka do modelu whisper.cpp (.bin)
 _WHISPER_LANGUAGE_KEY = "whisper_language"  # 'auto' | 'pl' | 'en' (domyślnie auto)
 _WHISPER_THREADS_KEY = "whisper_threads"  # liczba wątków whisper-cli (opcjonalne)
 _RECORD_PREROLL_KEY = "record_preroll_sec"  # sekundy głowy nagrania odcięte (zimny start ddagrab)
+_SUMMARY_MODEL_LOCAL_KEY = "summary_model_local"  # model lokalny gatewaya (np. ollama/qwen3:27b)
+_SUMMARY_MODEL_CLOUD_KEY = "summary_model_cloud"  # model chmurowy (None = brak trasy chmurowej)
+_SUMMARY_LANGUAGE_KEY = "summary_language"  # język streszczenia (domyślnie pl)
+_SUMMARY_MAX_TOKENS_KEY = "summary_max_tokens"  # limit tokenów odpowiedzi streszczenia
+_SUMMARY_TIMEOUT_KEY = "summary_timeout_sec"  # timeout żądania do gatewaya (domyślnie 120 s)
 
 
 def load(on_dirty: Callable[[], None] | None = None) -> Config:
@@ -168,6 +173,48 @@ def get_whisper_threads(cfg: Config) -> int | None:
     """Liczba wątków whisper-cli z configu lub ``None`` (domyślne whisper.cpp)."""
     value = cfg.get(_WHISPER_THREADS_KEY)
     return value if isinstance(value, int) and value > 0 else None
+
+
+def get_summary_model_local(cfg: Config) -> str | None:
+    """Model lokalny streszczeń (przez gateway, np. ``ollama/qwen3:27b``) lub ``None``."""
+    value = cfg.get(_SUMMARY_MODEL_LOCAL_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def set_summary_model_local(cfg: Config, model: str) -> None:
+    """Zapisuje nazwę modelu lokalnego streszczeń."""
+    cfg[_SUMMARY_MODEL_LOCAL_KEY] = model
+
+
+def get_summary_model_cloud(cfg: Config) -> str | None:
+    """Model chmurowy streszczeń (przez gateway) lub ``None`` — ``None`` = brak trasy chmurowej."""
+    value = cfg.get(_SUMMARY_MODEL_CLOUD_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def set_summary_model_cloud(cfg: Config, model: str) -> None:
+    """Zapisuje nazwę modelu chmurowego streszczeń."""
+    cfg[_SUMMARY_MODEL_CLOUD_KEY] = model
+
+
+def get_summary_language(cfg: Config) -> str:
+    """Język streszczenia (domyślnie ``pl``)."""
+    value = cfg.get(_SUMMARY_LANGUAGE_KEY)
+    return value if isinstance(value, str) and value else "pl"
+
+
+def get_summary_max_tokens(cfg: Config) -> int:
+    """Limit tokenów odpowiedzi streszczenia (domyślnie 1024)."""
+    value = cfg.get(_SUMMARY_MAX_TOKENS_KEY)
+    return value if isinstance(value, int) and value > 0 else 1024
+
+
+def get_summary_timeout(cfg: Config) -> float:
+    """Timeout żądania do gatewaya w sekundach (domyślnie 120 — wolny model lokalny)."""
+    value = cfg.get(_SUMMARY_TIMEOUT_KEY)
+    if isinstance(value, int | float) and value > 0:
+        return float(value)
+    return 120.0
 
 
 def get_record_preroll_sec(cfg: Config) -> int:

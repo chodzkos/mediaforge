@@ -27,6 +27,9 @@ _API_KEY_PREFIX = "api_key:"
 # Stałe nazwy pojedynczych sekretów (poza rejestrem dostawców).
 HF_TOKEN_KEY = "hf_token"  # gated pyannote — token Hugging Face
 TELEGRAM_TOKEN_KEY = "telegram_bot_token"
+# Master key gatewaya LiteLLM — JEDYNY klucz mieszkający w mediaforge (opcjonalny; klucze
+# dostawców trzyma config gatewaya, nie aplikacja). W keyring, nigdy w configu/plaintext.
+GATEWAY_MASTER_KEY = "litellm_master_key"
 
 
 def provider_api_key_name(provider: str) -> str:
