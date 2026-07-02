@@ -62,6 +62,29 @@ def test_metadata_folder_to_sqlite_round_trip(tmp_path: Path) -> None:
     assert from_sql == read_metadata(material_dir)
 
 
+def test_cloud_ok_missing_field_defaults_false(tmp_path: Path) -> None:
+    """BRAK pola cloud_ok w metadata.json = False (fail-safe: zapomnienie = lokalnie)."""
+    # Metadane bez cloud_ok (np. sprzed S4) — from_dict musi dać False, nie rzucić.
+    assert MaterialMetadata.from_dict({"title": "X", "created_at": "t"}).cloud_ok is False
+    # Zapis pełnych metadanych domyślnie też ma cloud_ok=False.
+    assert _meta().cloud_ok is False
+
+
+def test_cloud_ok_and_summary_path_round_trip(tmp_path: Path) -> None:
+    """cloud_ok=True i summary_path przeżywają round-trip metadata.json ↔ SQLite."""
+    meta = replace(_meta(), cloud_ok=True, summary_status="done", summary_path="summary.md")
+    material_dir = tmp_path / "material"
+    write_metadata(material_dir, meta)
+    assert read_metadata(material_dir) == meta  # JSON round-trip
+
+    store = _store(tmp_path)
+    rec_id = store.upsert_material(material_dir, read_metadata(material_dir))
+    from_sql = store.to_metadata(rec_id)
+    assert from_sql is not None
+    assert from_sql.cloud_ok is True and from_sql.summary_path == "summary.md"
+    assert from_sql == meta  # SQLite round-trip zachowuje wszystkie pola
+
+
 def test_upsert_is_idempotent_by_folder(tmp_path: Path) -> None:
     """Ponowny zapis tych samych metadanych aktualizuje wiersz, nie duplikuje."""
     meta = _meta()

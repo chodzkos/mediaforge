@@ -15,6 +15,7 @@ from chodzkos_gui_kit.qt.widgets import LogView
 from PySide6.QtCore import QPoint, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -180,6 +181,10 @@ class LibraryWidget(QWidget):
         self._tags = QLineEdit()
         self._tags.setPlaceholderText("tagi po przecinku")
         form.addRow("Tagi:", self._tags)
+        # Zgoda na chmurę (fail-safe): bez niej streszczenie idzie WYŁĄCZNIE lokalnie.
+        self._cloud_ok = QCheckBox("Zezwól na przetwarzanie w chmurze")
+        self._cloud_ok.setToolTip("Bez zgody materiał jest przetwarzany wyłącznie lokalnie")
+        form.addRow("Prywatność:", self._cloud_ok)
         col.addLayout(form)
 
         # „Info" POZA formularzem: pełna szerokość + zawijanie pcha przyciski w dół, a nie
@@ -273,6 +278,7 @@ class LibraryWidget(QWidget):
         self._organizer.setText(meta.organizer or "")
         self._category.setText(meta.category or "")
         self._tags.setText(", ".join(meta.tags))
+        self._cloud_ok.setChecked(meta.cloud_ok)
         self._info.setText(
             f"Data: {meta.created_at[:19] or '—'}  ·  Długość: {_fmt_duration(meta.duration)}  ·  "
             f"Źródło: {meta.source_type}  ·  Transkrypcja: {meta.transcript_status}  ·  "
@@ -304,6 +310,7 @@ class LibraryWidget(QWidget):
             organizer=self._organizer.text().strip() or None,
             category=self._category.text().strip() or None,
             tags=[t.strip() for t in self._tags.text().split(",") if t.strip()],
+            cloud_ok=self._cloud_ok.isChecked(),
         )
         write_metadata(folder, updated)  # metadata.json = źródło prawdy
         self._store.upsert_material(folder, updated)  # synchronizacja indeksu
@@ -426,6 +433,7 @@ class LibraryWidget(QWidget):
             self._organizer,
             self._category,
             self._tags,
+            self._cloud_ok,
             self._save_btn,
             self._transcribe_btn,
             self._open_btn,
@@ -436,6 +444,7 @@ class LibraryWidget(QWidget):
     def _clear_details(self) -> None:
         for edit in (self._title, self._presenter, self._organizer, self._category, self._tags):
             edit.clear()
+        self._cloud_ok.setChecked(False)
         self._info.clear()
         self._thumb.setText("(brak podglądu)")
         self._set_details_enabled(False)
