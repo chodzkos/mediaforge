@@ -33,6 +33,39 @@ def test_build_request_shape() -> None:
     assert user == {"role": "user", "content": "PEŁNY TRANSKRYPT"}
 
 
+def test_build_request_includes_prompt_suffix() -> None:
+    """System-prompt niesie sufiks (domyślnie ``/no_think`` dla qwen3); pusty = brak dopisku."""
+    default = build_summary_request(
+        "T", ModelRoute(RouteKind.LOCAL, "ollama/qwen3"), SummaryConfig(base_url="x")
+    )
+    assert default["messages"][0]["content"].endswith("/no_think")
+    cleared = build_summary_request(
+        "T", ModelRoute(RouteKind.LOCAL, "m"), SummaryConfig(base_url="x", prompt_suffix="")
+    )
+    assert "/no_think" not in cleared["messages"][0]["content"]
+
+
+def test_parse_empty_content_budget_exhausted() -> None:
+    """Pusty content + completion_tokens >= max_tokens → komunikat o limicie na rozumowanie."""
+    data = {
+        # finish_reason „stop" MYLI (raportowany mimo ucięcia) — diagnostyki na nim nie opieramy.
+        "choices": [{"message": {"content": ""}, "finish_reason": "stop"}],
+        "usage": {"completion_tokens": 4096},
+    }
+    with pytest.raises(GatewayError, match="limit tokenów"):
+        parse_summary_response(data, max_tokens=4096)
+
+
+def test_parse_empty_content_without_budget_exhausted() -> None:
+    """Pusty content, ale budżet NIE wyczerpany → dotychczasowy komunikat „pusta treść"."""
+    data = {"choices": [{"message": {"content": "   "}}], "usage": {"completion_tokens": 12}}
+    with pytest.raises(GatewayError, match="pustą treść"):
+        parse_summary_response(data, max_tokens=4096)
+    # Bez informacji o usage też komunikat ogólny (nie ma na czym oprzeć diagnozy budżetu).
+    with pytest.raises(GatewayError, match="pustą treść"):
+        parse_summary_response({"choices": [{"message": {"content": ""}}]}, max_tokens=4096)
+
+
 def test_endpoint_trailing_slash_normalized() -> None:
     """base_url z i bez trailing slash daje ten sam endpoint (brak podwójnego //)."""
     captured: dict[str, str] = {}

@@ -123,6 +123,7 @@ class LibraryWidget(QWidget):
             max_tokens=cfg_mod.get_summary_max_tokens(self._config),
             timeout=cfg_mod.get_summary_timeout(self._config),
             api_key=secrets.get_secret(secrets.GATEWAY_MASTER_KEY),
+            prompt_suffix=cfg_mod.get_summary_prompt_suffix(self._config),
         )
         return SummaryClient(config)
 
