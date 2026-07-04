@@ -144,3 +144,8 @@ Guard NAS-safety pomija prune, gdy root niedostępny/pusty a indeks niepusty (ż
 
 **Backfill wierszy pre-S2 (`folder=NULL`).**
 `ensure_schema` migruje stare bazy (dodaje `folder`/`presenter`/…), ale wiersze sprzed S2 mają `folder=NULL` i nie pokazują się w `list_materials()` (filtr prawdziwych materiałów). Dane nie giną. Jeśli takie wiersze mają foldery z `metadata.json` — rescan powinien je naprawić (upsert z folderem), sprawdzić brak duplikatów. Jeśli nie mają (format pre-S2) — backfill albo poluzowanie filtra. Dotyczy tylko realnych nagrań sprzed S2.
+
+### Layout/kandydat do gui-kit
+
+**DetailPanel.**
+„DetailPanel: wzorzec panelu szczegółów odpornego na elementy zmiennej wysokości — wynieść z mediaforge po sprawdzeniu w S5/S6, gdy pojawi się drugi konsument".

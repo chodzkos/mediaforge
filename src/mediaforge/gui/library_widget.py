@@ -8,27 +8,21 @@ statusy ``QTimer``-em i streamuje je do ``LogView`` (bez sygnałów z wątków r
 
 from __future__ import annotations
 
-import dataclasses
 from pathlib import Path
 
 from chodzkos_gui_kit.qt.widgets import LogView
 from PySide6.QtCore import QPoint, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QListWidget,
     QMenu,
     QPushButton,
-    QSizePolicy,
     QSplitter,
-    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -53,6 +47,7 @@ from mediaforge.core.jobs.handlers import (
 from mediaforge.core.library.db import Database
 from mediaforge.core.library.material import MaterialMetadata, write_metadata
 from mediaforge.core.library.recordings import RecordingStore
+from mediaforge.gui.material_details import MaterialDetailsPanel
 
 _ALL = "(wszystkie)"
 # Kolory statusów zadań w LogView (role palety — przeżywają zmianę motywu).
@@ -190,73 +185,18 @@ class LibraryWidget(QWidget):
         root.addWidget(self._log)
 
     def _build_details(self) -> QWidget:
-        panel = QWidget()
-        col = QVBoxLayout(panel)
+        """Buduje panel szczegółów (wydzielona klasa) i wiąże jego przyciski z akcjami widoku.
 
-        self._thumb = QLabel("(brak podglądu)")
-        self._thumb.setMinimumHeight(150)
-        self._thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        col.addWidget(self._thumb)
-
-        form = QFormLayout()
-        self._title = QLineEdit()
-        form.addRow("Tytuł:", self._title)
-        self._presenter = QLineEdit()
-        form.addRow("Prowadzący:", self._presenter)
-        self._organizer = QLineEdit()
-        form.addRow("Organizator:", self._organizer)
-        self._category = QLineEdit()
-        form.addRow("Kategoria:", self._category)
-        self._tags = QLineEdit()
-        self._tags.setPlaceholderText("tagi po przecinku")
-        form.addRow("Tagi:", self._tags)
-        # Zgoda na chmurę (fail-safe): bez niej streszczenie idzie WYŁĄCZNIE lokalnie.
-        self._cloud_ok = QCheckBox("Zezwól na przetwarzanie w chmurze")
-        self._cloud_ok.setToolTip("Bez zgody materiał jest przetwarzany wyłącznie lokalnie")
-        form.addRow("Prywatność:", self._cloud_ok)
-        col.addLayout(form)
-
-        # „Info" POZA formularzem: pełna szerokość + zawijanie pcha przyciski w dół, a nie
-        # je przykrywa (w QFormLayout zawinięta 2. linia nachodziła na rząd akcji).
-        self._info = QLabel("")
-        self._info.setWordWrap(True)
-        self._info.setEnabled(False)
-        self._info.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-        col.addWidget(self._info)
-
-        actions = QHBoxLayout()
-        self._save_btn = QPushButton("Zapisz metadane")
-        self._save_btn.clicked.connect(self._on_save)
-        actions.addWidget(self._save_btn)
-        self._transcribe_btn = QPushButton("Transkrybuj")
-        self._transcribe_btn.setToolTip("Dodaj transkrypcję (whisper.cpp) do kolejki")
-        self._transcribe_btn.clicked.connect(self._on_transcribe)
-        actions.addWidget(self._transcribe_btn)
-        self._summarize_btn = QPushButton("Streszcz")
-        self._summarize_btn.setToolTip(
-            "Streszczenie transkryptu przez gateway (aktywne po transkrypcji)"
-        )
-        self._summarize_btn.clicked.connect(self._on_summarize)
-        actions.addWidget(self._summarize_btn)
-        self._open_btn = QPushButton("Otwórz folder")
-        self._open_btn.clicked.connect(self._open_folder)
-        actions.addWidget(self._open_btn)
-        actions.addStretch(1)
-        self._delete_btn = QPushButton("Usuń")
-        self._delete_btn.setToolTip("Trwale usuń materiał (nagranie + transkrypt + metadane)")
-        self._delete_btn.clicked.connect(self._on_delete)
-        actions.addWidget(self._delete_btn)
-        col.addLayout(actions)
-
-        # Podgląd streszczenia (summary.md) — Markdown renderowany na żywo z pliku w folderze.
-        col.addWidget(QLabel("Streszczenie:"))
-        self._summary_view = QTextBrowser()
-        self._summary_view.setMinimumHeight(120)
-        self._summary_view.setOpenExternalLinks(True)
-        self._summary_view.setPlaceholderText("(brak streszczenia — użyj „Streszcz”)")
-        col.addWidget(self._summary_view, stretch=1)
-        self._set_details_enabled(False)
-        return panel
+        Panel jest odsprzężony (nie zna store/kolejki/configu) — tu podłączamy sygnały
+        ``clicked`` do handlerów biblioteki i czytamy edycje przez ``apply_edits``.
+        """
+        self._details = MaterialDetailsPanel()
+        self._details.save_btn.clicked.connect(self._on_save)
+        self._details.transcribe_btn.clicked.connect(self._on_transcribe)
+        self._details.summarize_btn.clicked.connect(self._on_summarize)
+        self._details.open_btn.clicked.connect(self._open_folder)
+        self._details.delete_btn.clicked.connect(self._on_delete)
+        return self._details
 
     # ── Dane ──────────────────────────────────────────────────────────────────
 
@@ -293,7 +233,7 @@ class LibraryWidget(QWidget):
             self._list.setCurrentRow(0)
         else:
             self._current = None
-            self._clear_details()
+            self._details.clear()
 
     @staticmethod
     def _filter_value(combo: QComboBox) -> str | None:
@@ -312,47 +252,11 @@ class LibraryWidget(QWidget):
     def _on_select(self, row: int) -> None:
         if not (0 <= row < len(self._materials)):
             self._current = None
-            self._clear_details()
+            self._details.clear()
             return
         self._current = self._materials[row]
         _id, folder, meta = self._current
-        self._title.setText(meta.title)
-        self._presenter.setText(meta.presenter or "")
-        self._organizer.setText(meta.organizer or "")
-        self._category.setText(meta.category or "")
-        self._tags.setText(", ".join(meta.tags))
-        self._cloud_ok.setChecked(meta.cloud_ok)
-        self._info.setText(
-            f"Data: {meta.created_at[:19] or '—'}  ·  Długość: {_fmt_duration(meta.duration)}  ·  "
-            f"Źródło: {meta.source_type}  ·  Transkrypcja: {meta.transcript_status}  ·  "
-            f"Streszczenie: {meta.summary_status}"
-        )
-        self._set_details_enabled(True)
-        # „Streszcz" tylko po transkrypcji (handler i tak odmówi bez transkryptu — to UX).
-        self._summarize_btn.setEnabled(meta.transcript_status == "done")
-        self._show_thumbnail(folder, meta)
-        self._show_summary(folder, meta)
-
-    def _show_thumbnail(self, folder: Path, meta: MaterialMetadata) -> None:
-        if meta.thumbnail_path:
-            pixmap = QPixmap(str(folder / meta.thumbnail_path))
-            if not pixmap.isNull():
-                self._thumb.setPixmap(
-                    pixmap.scaledToWidth(320, Qt.TransformationMode.SmoothTransformation)
-                )
-                return
-        self._thumb.setText("(brak podglądu)")
-
-    def _show_summary(self, folder: Path, meta: MaterialMetadata) -> None:
-        """Renderuje summary.md (źródło prawdy) jako Markdown; brak pliku → czyści podgląd."""
-        if meta.summary_path:
-            path = folder / meta.summary_path
-            try:
-                self._summary_view.setMarkdown(path.read_text(encoding="utf-8"))
-                return
-            except OSError:
-                pass
-        self._summary_view.clear()
+        self._details.load(folder, meta)
 
     # ── Edycja ────────────────────────────────────────────────────────────────
 
@@ -360,15 +264,7 @@ class LibraryWidget(QWidget):
         if self._current is None:
             return
         _id, folder, meta = self._current
-        updated = dataclasses.replace(
-            meta,
-            title=self._title.text().strip() or meta.title,
-            presenter=self._presenter.text().strip() or None,
-            organizer=self._organizer.text().strip() or None,
-            category=self._category.text().strip() or None,
-            tags=[t.strip() for t in self._tags.text().split(",") if t.strip()],
-            cloud_ok=self._cloud_ok.isChecked(),
-        )
+        updated = self._details.apply_edits(meta)  # czyta pola panelu (bez IO)
         write_metadata(folder, updated)  # metadata.json = źródło prawdy
         self._store.upsert_material(folder, updated)  # synchronizacja indeksu
         self.refresh_all()
@@ -422,7 +318,7 @@ class LibraryWidget(QWidget):
             return
         self._log.append_line(f"Usunięto «{meta.title}»", "done")
         self._current = None
-        self._clear_details()
+        self._details.clear()
         self.refresh_all()
 
     # ── Pomocnicze ────────────────────────────────────────────────────────────
@@ -480,7 +376,7 @@ class LibraryWidget(QWidget):
             self._log.append_line(f"Nie streszczono «{meta.title}»: {exc}", "error")
             return
         where = "chmura" if meta.cloud_ok else "lokalnie"
-        self._log.append_line(f"Streszczenie w kolejce ({where}): {meta.title}", "queued")
+        self._log.append_line(f"Streszczanie w kolejce ({where}): {meta.title}", "queued")
 
     # ── Polling statusów zadań (QTimer; bez sygnałów z wątków roboczych) ──────
 
@@ -510,28 +406,3 @@ class LibraryWidget(QWidget):
             self._job_status.setText("")
         if completed:
             self.refresh_all()
-
-    def _set_details_enabled(self, enabled: bool) -> None:
-        for widget in (
-            self._title,
-            self._presenter,
-            self._organizer,
-            self._category,
-            self._tags,
-            self._cloud_ok,
-            self._save_btn,
-            self._transcribe_btn,
-            self._summarize_btn,
-            self._open_btn,
-            self._delete_btn,
-        ):
-            widget.setEnabled(enabled)
-
-    def _clear_details(self) -> None:
-        for edit in (self._title, self._presenter, self._organizer, self._category, self._tags):
-            edit.clear()
-        self._cloud_ok.setChecked(False)
-        self._info.clear()
-        self._thumb.setText("(brak podglądu)")
-        self._summary_view.clear()
-        self._set_details_enabled(False)
