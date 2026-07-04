@@ -17,6 +17,8 @@ from mediaforge.core.engines.download_engine import (
     domain_of,
     parse_download_progress,
     parse_info_json,
+    run_ytdlp_update,
+    ytdlp_update_plan,
 )
 from mediaforge.core.jobs import JobQueue, JobStatus, JobStore
 from mediaforge.core.jobs.handlers import (
@@ -81,6 +83,36 @@ def test_build_command_never_emits_credentials() -> None:
 
 def test_build_update_command() -> None:
     assert build_update_command("yt-dlp") == ["yt-dlp", "-U"]
+
+
+def test_ytdlp_update_plan_variants() -> None:
+    """Standalone (path) → -U; moduł pythonowy (path None) → instrukcja uv; brak → instalacja."""
+    cmd, _ = ytdlp_update_plan(available=True, path="/usr/bin/yt-dlp")
+    assert cmd == ["/usr/bin/yt-dlp", "-U"]
+    cmd, msg = ytdlp_update_plan(available=True, path=None)
+    assert cmd is None and "uv" in msg  # moduł — nie samo-aktualizuje przez -U
+    cmd, msg = ytdlp_update_plan(available=False, path=None)
+    assert cmd is None and "zainstaluj" in msg
+
+
+def test_run_ytdlp_update_standalone_runs_command() -> None:
+    calls: list[list[str]] = []
+
+    def runner(command: list[str]) -> tuple[int, str]:
+        calls.append(command)
+        return 0, "Updated yt-dlp to nightly"
+
+    msg = run_ytdlp_update(available=True, path="/usr/bin/yt-dlp", runner=runner)
+    assert calls == [["/usr/bin/yt-dlp", "-U"]]
+    assert "Updated yt-dlp" in msg
+
+
+def test_run_ytdlp_update_module_does_not_run() -> None:
+    def runner(command: list[str]) -> tuple[int, str]:  # pragma: no cover - nie powinien być wołany
+        raise AssertionError("moduł pythonowy nie może wołać -U")
+
+    msg = run_ytdlp_update(available=True, path=None, runner=runner)
+    assert "uv" in msg
 
 
 # ── Parser postępu ────────────────────────────────────────────────────────────

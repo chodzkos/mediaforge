@@ -60,6 +60,16 @@ def doctor(as_json: bool = typer.Option(False, "--json")) -> None:
         typer.echo(detection.render_report(report))
 
 
+@app.command(name="update-ytdlp")
+def update_ytdlp() -> None:
+    """Zaktualizuj yt-dlp (``-U`` dla binarki standalone; instrukcja uv dla modułu pythonowego)."""
+    from mediaforge.core.detection import tools
+    from mediaforge.core.engines.download_engine import run_ytdlp_update
+
+    report = tools.check_ytdlp()
+    typer.echo(run_ytdlp_update(available=bool(report.get("available")), path=report.get("path")))
+
+
 @app.command()
 def paths() -> None:
     """Pokaż katalogi konfiguracji i logów aplikacji."""

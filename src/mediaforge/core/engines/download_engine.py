@@ -95,6 +95,55 @@ def build_update_command(ytdlp: str = "yt-dlp") -> list[str]:
     return [ytdlp, "-U"]
 
 
+# Wynik decyzji o aktualizacji: (komenda do uruchomienia albo None, komunikat dla użytkownika).
+UpdateRunner = Callable[[list[str]], "tuple[int, str]"]
+
+
+def ytdlp_update_plan(*, available: bool, path: str | None) -> tuple[list[str] | None, str]:
+    """Decyduje wariant aktualizacji yt-dlp z detekcji (standalone ``-U`` vs moduł pythonowy).
+
+    Standalone (binarka w PATH, ``path`` ustawione) → ``yt-dlp -U``. Moduł pythonowy
+    (``path`` None) NIE aktualizuje się przez ``-U`` — zwracamy instrukcję „przez uv".
+    """
+    if not available:
+        return None, "yt-dlp niedostępny — zainstaluj (uv add yt-dlp) albo dodaj binarkę do PATH."
+    if path:
+        return build_update_command(str(path)), f"Aktualizuję yt-dlp ({path})…"
+    return (
+        None,
+        "yt-dlp działa jako moduł pythonowy — zaktualizuj pakiet: "
+        "uv sync --upgrade-package yt-dlp",
+    )
+
+
+def _default_update_runner(command: list[str]) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            creationflags=_NO_WINDOW,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, str(exc)
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def run_ytdlp_update(
+    *, available: bool, path: str | None, runner: UpdateRunner = _default_update_runner
+) -> str:
+    """Wykonuje aktualizację yt-dlp wg wariantu z detekcji; zwraca komunikat dla użytkownika."""
+    command, message = ytdlp_update_plan(available=available, path=path)
+    if command is None:
+        return message
+    code, output = runner(command)
+    tail = output.strip().splitlines()[-3:]
+    detail = "\n".join(tail)
+    return f"{message}\n{detail}" if code == 0 else f"yt-dlp -U nie powiodło się:\n{detail}"
+
+
 # ── Parser postępu (czysta funkcja; ten sam wzorzec co transcribe-progress) ───
 
 _PROGRESS_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
