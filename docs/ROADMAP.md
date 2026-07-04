@@ -25,7 +25,7 @@ Szkielet pakietu (`core`/`gui`/`cli`), `pyproject` + uv, ruff/mypy/pytest, CI (W
 
 `ImporterEngine` (MP4/MKV/MOV/MP3/WAV/M4A…), ekstrakcja audio, miniatury. Biblioteka: lista + metadane (tytuł, data, źródło, prowadzący, organizator, kategoria, tagi, długość, statusy), edycja metadanych, podgląd. Układ „jeden materiał = jeden folder" + `metadata.json` (źródło prawdy) z **indeksem SQLite odbudowywalnym z folderów** (`rescan` → upsert z każdego `metadata.json`).
 
-**Profile źródeł (per domena) → odroczone do S5.** Domenowe klucze pasują do downloadu/URL-i (S5), nie do importu lokalnego; tabela `source_profiles` została w schemacie. (To NIE to samo co ewentualne lekkie *presety importu* auto-uzupełniające metadane — te są osobną, lżejszą rzeczą, nie domenowymi profilami.)
+**Profile źródeł (per domena) → odroczone do S5 (✓ spłacone w S5).** Domenowe klucze pasują do downloadu/URL-i (S5), nie do importu lokalnego; tabela `source_profiles` została w schemacie. (To NIE to samo co ewentualne lekkie *presety importu* auto-uzupełniające metadane — te są osobną, lżejszą rzeczą, nie domenowymi profilami.)
 
 **Import synchroniczny = świadomy dług → SPŁACONY w S3.** Kopia+FFmpeg blokowały pętlę zdarzeń; od S3 import idzie przez kolejkę `jobs` (kind `import`, wątek roboczy), bez tymczasowego QThread.
 
@@ -53,14 +53,14 @@ Szkielet pakietu (`core`/`gui`/`cli`), `pyproject` + uv, ruff/mypy/pytest, CI (W
 
 **Akceptacja (rdzeń):** streszczenie lokalne i chmurowe routowane przez gateway; **„bez zgody = wyłącznie lokalnie"** egzekwowane dwustopniowo (resolve wybiera, assert blokuje wrażliwy→chmura); padnięty gateway → czytelny błąd z URL-em; streszczenie lokalne serializowane z transkrypcją na linii GPU, chmurowe na I/O. Bramka zielona (ruff + mypy --strict + pytest).
 
-## ☐ S5 — Pobieranie bezpośrednie (yt-dlp, bez DRM)
-**Gałąź:** `feat/s5-downloader`
+## ☑ S5 — Pobieranie bezpośrednie (yt-dlp + podcasty RSS, bez DRM)
+**Gałąź:** `feat/s5-download`
 
-`DownloaderEngine` (yt-dlp). Logowanie: `--cookies-from-browser` / ręczne (sekrety w keyring). Wybór jakości z `-F` + presety, tryb audio-only. Łączenie strumieni, osadzanie metadanych/miniatury, pobieranie istniejących napisów. Wykrycie DRM → komunikat z `LEGAL_BOUNDARIES.md` (bez prób obejścia). Przycisk „Aktualizuj yt-dlp". Podpowiedź „pobierz zamiast nagrywać", gdy źródło bez DRM.
+**Dostarczony rdzeń:** `DownloaderEngine` (yt-dlp jako subprocess) — czysty builder komendy, postęp z stdout (`[download] N%` → `jobs.progress`, throttle), metadane z `.info.json`, miniatura, `duration` z info/ffprobe; job `download` na linii I/O; błąd yt-dlp → `jobs.error` z POWODEM (geo-block/404/prywatne). **Granica prawna w kodzie:** cookies-from-browser jako JEDYNY tor zalogowany (opt-in, zamknięta lista przeglądarek), builder NIGDY nie emituje `--username`/`--password` (test-kontrakt); zero obchodzenia DRM. **Podcasty RSS:** parser stdlib (`xml.etree`, bez feedparser) + pobranie feedu przez `urllib`; dialog „Podcast" (lista odcinków → joby audio). **Profile źródeł (spłata z S2):** `source_profiles` dostały wiring — profil per domena (kategoria/tagi/organizator + domyślny `cloud_ok`), prefill przy pobraniu, fail-safe nienaruszony (globalny default False; profil podnosi cloud_ok tylko za świadomą zgodą). **Aktualizacja yt-dlp:** akcja GUI/CLI (`-U` dla binarki; instrukcja `uv` dla modułu). Dialogi „Pobierz…"/„Podcast…"/„Profile…" wpięte w bibliotekę.
 
-**Profile źródeł (per domena, definiowane przez użytkownika) — przeniesione z S2:** domyślny silnik, metoda logowania, preset jakości, kategoria/tagi, szablon nazwy, tryb notatki, język — dopasowanie po domenie URL. Bez wbudowanego katalogu nazwanych platform. Tabela `source_profiles` istnieje od S2; tu dochodzi wiring. (To domenowe profile dla URL-i — odrębne od ewentualnych lekkich *presetów importu* metadanych.)
+**Odroczone (nie w tym etapie):** wybór jakości z interaktywnego `-F` + presety (na razie `bv*+ba/b` albo audio-only); pobieranie istniejących napisów; wykrywanie DRM z dedykowanym komunikatem (yt-dlp i tak nie obchodzi — obecnie DRM ląduje jako czytelny błąd yt-dlp); podpowiedź „pobierz zamiast nagrywać". **Auto-subskrypcja RSS → Backlog** (wymaga schedulera/demona — decyzja architektoniczna osobno).
 
-**Akceptacja:** pobranie materiału bez DRM z wyborem jakości i audio-only; źródło z DRM zwraca komunikat, nie próbuje obejścia; brak zapisanych sekretów poza keyring; profil źródła wypełnia ustawienia po dopasowaniu domeny (przeniesione z S2).
+**Akceptacja (rdzeń):** pobranie bez DRM (wideo/audio) tworzy folder + `metadata.json` + wpis; cookies-from-browser tylko po opt-in, ZERO haseł w aplikacji (test-kontrakt); podcast z RSS kolejkuje wybrane odcinki; profil domeny prefilluje metadane; „Aktualizuj yt-dlp" rozpoznaje wariant. Bramka zielona (ruff + mypy --strict + pytest).
 
 ## ☐ S6 — Slajdy (detekcja + VLM)
 **Gałąź:** `feat/s6-slides`
@@ -125,6 +125,14 @@ Obecnie twarda granica: wyłącznie gateway LiteLLM (jeden punkt egzekwowania ro
 
 **Rejestr dostawców per zadanie w GUI + style / tryby dziedzinowe / auto-nazwa (follow-upy S4).**
 Rdzeń S4 dostarczył tor gateway + granicę prywatności + kolejkę. Do dorobienia jako osobne gałęzie: wybór modelu per zadanie w ustawieniach (model danych `core/ai/providers.py` istnieje, walidacja vision też), style streszczeń (krótkie/dokładne/w punktach/rozdziały), tryby dziedzinowe (medyczny/techniczny/programistyczny/biznesowy/ogólny), auto-nazwa pliku z AI (sanityzacja pod Windows), long-context z hierarchicznym streszczaniem (lokalnie do limitu okna, dłuższe → chmura). Świadomie odłożone, żeby najpierw utwardzić granicę prywatności i tor kolejki.
+
+### Pobieranie / źródła
+
+**Auto-pobieranie nowych odcinków subskrybowanych RSS.**
+S5 pobiera odcinki RSS na żądanie (dialog „Podcast" → wybór → joby). Auto-subskrypcja (śledzenie kanałów i pobieranie nowych odcinków bez udziału użytkownika) wymaga schedulera/demona żyjącego poza sesją GUI — to decyzja architektoniczna na osobno (jak długo żyjący proces, kiedy odpytywać, deduplikacja pobranych `guid`, powiadomienia). Nie robić „przy okazji". Powiązane z ewentualnym schedulerem konferencyjnym (S8).
+
+**Wybór jakości (`-F`) + presety, napisy, wykrywanie DRM z komunikatem.**
+S5 pobiera „najlepsze" (`bv*+ba/b`) albo audio-only; interaktywny wybór formatu z `yt-dlp -F`, presety jakości, pobieranie istniejących napisów i dedykowany komunikat przy DRM (z `LEGAL_BOUNDARIES.md`) są odłożone — obecnie DRM ląduje jako czytelny błąd yt-dlp, bez próby obejścia. Dorobić, gdy realnie potrzebny wybór jakości per pobranie.
 
 ### Transkrypcja
 

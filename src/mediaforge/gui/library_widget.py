@@ -31,15 +31,19 @@ from mediaforge.core import config as cfg_mod
 from mediaforge.core import secrets
 from mediaforge.core.ai.summarize import SummaryClient, SummaryConfig
 from mediaforge.core.ai.transcribe import WhisperCppBackend
+from mediaforge.core.detection import tools as detect_tools
+from mediaforge.core.engines.download_engine import DownloaderEngine, run_ytdlp_update
 from mediaforge.core.engines.import_engine import ImporterEngine
 from mediaforge.core.jobs import JobQueue, JobStatus, JobStore
 from mediaforge.core.jobs.handlers import (
     DEFAULT_LANES,
     DEFAULT_ROUTES,
+    JOB_DOWNLOAD,
     JOB_IMPORT,
     JOB_SUMMARIZE,
     JOB_TRANSCRIBE,
     enqueue_summarize,
+    make_download_handler,
     make_import_handler,
     make_summarize_handler,
     make_transcribe_handler,
@@ -88,6 +92,9 @@ class LibraryWidget(QWidget):
                 local_model=cfg_mod.get_summary_model_local(self._config),
                 cloud_model=cfg_mod.get_summary_model_cloud(self._config),
             ),
+        )
+        self._queue.register(
+            JOB_DOWNLOAD, make_download_handler(DownloaderEngine(store=self._store))
         )
         self._seen: dict[int, str] = {}
         self._poll = QTimer(self)
@@ -141,6 +148,22 @@ class LibraryWidget(QWidget):
         self._import_btn.setToolTip("Zaimportuj lokalne pliki A/V do biblioteki")
         self._import_btn.clicked.connect(self._open_import)
         bar.addWidget(self._import_btn)
+        self._download_btn = QPushButton("Pobierz…")
+        self._download_btn.setToolTip("Pobierz z URL przez yt-dlp (wideo/audio, bez DRM)")
+        self._download_btn.clicked.connect(self._open_download)
+        bar.addWidget(self._download_btn)
+        self._podcast_btn = QPushButton("Podcast…")
+        self._podcast_btn.setToolTip("Pobierz odcinki z kanału RSS podcastu")
+        self._podcast_btn.clicked.connect(self._open_podcast)
+        bar.addWidget(self._podcast_btn)
+        self._profiles_btn = QPushButton("Profile…")
+        self._profiles_btn.setToolTip("Edytuj profile źródeł (domyślne metadane per domena)")
+        self._profiles_btn.clicked.connect(self._open_profiles)
+        bar.addWidget(self._profiles_btn)
+        self._update_ytdlp_btn = QPushButton("Aktualizuj yt-dlp")
+        self._update_ytdlp_btn.setToolTip("Zaktualizuj yt-dlp (binarka: -U; moduł: instrukcja uv)")
+        self._update_ytdlp_btn.clicked.connect(self._on_update_ytdlp)
+        bar.addWidget(self._update_ytdlp_btn)
         self._rescan_btn = QPushButton("Przeskanuj")
         self._rescan_btn.setToolTip(
             "Odbuduj indeks z metadata.json w folderach biblioteki "
@@ -330,6 +353,38 @@ class LibraryWidget(QWidget):
         dialog.exec()
         if dialog.enqueued_count:
             self._log.append_line(f"Import: dodano {dialog.enqueued_count} do kolejki", "queued")
+
+    def _open_download(self) -> None:
+        from mediaforge.gui.download_dialog import DownloadDialog
+
+        dialog = DownloadDialog(self)
+        dialog.exec()
+        if dialog.enqueued_count:
+            self._log.append_line(
+                f"Pobieranie: dodano {dialog.enqueued_count} do kolejki", "queued"
+            )
+
+    def _open_podcast(self) -> None:
+        from mediaforge.gui.podcast_dialog import PodcastDialog
+
+        dialog = PodcastDialog(self)
+        dialog.exec()
+        if dialog.enqueued_count:
+            self._log.append_line(
+                f"Podcast: dodano {dialog.enqueued_count} odcinków do kolejki", "queued"
+            )
+
+    def _open_profiles(self) -> None:
+        from mediaforge.gui.profiles_dialog import ProfilesDialog
+
+        ProfilesDialog(self).exec()
+
+    def _on_update_ytdlp(self) -> None:
+        """Aktualizuje yt-dlp wg wariantu z detekcji (binarka: -U; moduł: instrukcja uv)."""
+        report = detect_tools.check_ytdlp()
+        message = run_ytdlp_update(available=bool(report.get("available")), path=report.get("path"))
+        for line in message.splitlines():
+            self._log.append_line(line, "info")
 
     def _on_rescan(self) -> None:
         """Odbudowuje indeks z folderów biblioteki (metadata.json = źródło prawdy)."""
