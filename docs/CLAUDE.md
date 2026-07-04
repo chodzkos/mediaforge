@@ -21,6 +21,23 @@ Czytaj ten plik przed każdym etapem. Zawiera konwencje, pułapki i twarde grani
 3. Status DRM = „do ustalenia później" oznacza decyzję o zakresie **legalnym**, nie o obejściu zabezpieczeń.
 4. Przy zadaniu dotykającym tych obszarów — **zatrzymaj się i poproś o potwierdzenie zakresu.** Patrz `LEGAL_BOUNDARIES.md`.
 
+### Pobieranie (S5, yt-dlp + RSS) — granica, której kod nie przekracza
+
+mediaforge pobiera treści, do których użytkownik ma **legalny dostęp**: publiczne/edukacyjne
+(konferencje, wykłady, otwarte RSS) oraz — **świadomy wyjątek** — treści za logowaniem, do
+których użytkownik MA wykupiony/przyznany dostęp (kursy, webinary członkowskie). Twarde linie:
+
+- **ZERO obchodzenia DRM** — yt-dlp i tak nie umie; nie dodawaj żadnych obejść (patrz pkt 1 wyżej).
+- **ZERO przechowywania haseł/loginów w aplikacji.** Zalogowany dostęp WYŁĄCZNIE przez
+  `--cookies-from-browser` (yt-dlp czyta sesję z przeglądarki użytkownika) — mediaforge nie
+  widzi, nie zapisuje i nie transportuje poświadczeń. Builder komendy pobierania **nigdy** nie
+  emituje `--username`/`--password` (jest na to test-kontrakt granicy).
+- **Cookies to opcja per pobranie/per profil (opt-in)** — checkbox „Użyj sesji przeglądarki:
+  [chrome/edge/firefox]", NIGDY domyślnie włączona.
+
+Nie rozmywaj tej granicy w przyszłych sesjach: żaden „wygodny" tryb logowania hasłem, żaden
+headless-scraping omijający 2FA (patrz pkt 2). Cookies-from-browser to jedyny tor zalogowany.
+
 ## Pułapki techniczne (sprzęt: RTX 5090 mobile, 24 GB VRAM, Blackwell sm_120, 128 GB RAM, Windows)
 
 - **24 GB to VRAM, nie 128 GB RAM.** O lokalnym LLM/Whisper/VLM decyduje VRAM. Nie zakładaj, że duży RAM pozwala na pełny long-context lokalnie — długi kontekst rośnie przez KV-cache w VRAM. Realny lokalny kontekst ~30–40k tokenów na ~24B; dłuższe → chmura przez LiteLLM.

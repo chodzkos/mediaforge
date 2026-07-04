@@ -15,6 +15,7 @@ from pathlib import Path
 from mediaforge.core.ai.routing import ModelRoute, assert_route_allowed, resolve_route
 from mediaforge.core.ai.summarize import SummaryClient, read_transcript_text
 from mediaforge.core.ai.transcribe import TranscribeOptions, TranscriptionBackend
+from mediaforge.core.engines.download_engine import DownloaderEngine
 from mediaforge.core.engines.import_engine import ImporterEngine
 from mediaforge.core.jobs.store import Job, JobStore
 from mediaforge.core.library.material import write_metadata
@@ -24,6 +25,7 @@ from mediaforge.core.library.recordings import RecordingStore
 JOB_TRANSCRIBE = "transcribe"
 JOB_IMPORT = "import"
 JOB_SUMMARIZE = "summarize"
+JOB_DOWNLOAD = "download"
 
 # Linie wykonawcze. GPU = jeden executor (max_workers=1) dzielony przez WSZYSTKIE zadania
 # modelowe (transkrypcja, streszczenie modelem LOKALNYM, później VLM) → tylko jeden model w
@@ -38,6 +40,7 @@ DEFAULT_ROUTES: dict[str, str] = {
     JOB_TRANSCRIBE: GPU_LANE,
     JOB_IMPORT: IO_LANE,
     JOB_SUMMARIZE: GPU_LANE,
+    JOB_DOWNLOAD: IO_LANE,  # sieć, nie GPU
 }
 
 _ProgressCb = Callable[[float], None]
@@ -185,6 +188,36 @@ def make_import_handler(engine: ImporterEngine) -> _Handler:
             title=payload.get("title"),
             category=payload.get("category"),
             tags=list(payload.get("tags") or []),
+        )
+
+    return handler
+
+
+def make_download_handler(engine: DownloaderEngine) -> _Handler:
+    """Handler pobierania: payload (URL + katalog + opcje/metadane) → DownloaderEngine.
+
+    ``cookies_browser`` przekazywane TYLKO gdy użytkownik świadomie wybrał sesję przeglądarki
+    (opt-in) — poświadczeń aplikacja nie widzi. ``cloud_ok`` z profilu źródła (domyślnie False).
+    Błąd yt-dlp → wyjątek → kolejka zapisuje POWÓD (stderr) do ``jobs.error``.
+    """
+
+    def handler(job: Job, progress: _ProgressCb) -> None:
+        payload = job.payload
+        url = str(payload["url"])
+        library_root = Path(str(payload["library_root"]))
+        engine.download(
+            url,
+            library_root,
+            lambda frac, _msg: progress(frac),
+            audio_only=bool(payload.get("audio_only", False)),
+            cookies_browser=payload.get("cookies_browser") or None,
+            title=payload.get("title"),
+            category=payload.get("category"),
+            tags=list(payload.get("tags") or []),
+            organizer=payload.get("organizer"),
+            presenter=payload.get("presenter"),
+            cloud_ok=bool(payload.get("cloud_ok", False)),
+            description=payload.get("description"),
         )
 
     return handler
