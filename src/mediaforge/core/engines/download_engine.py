@@ -44,8 +44,20 @@ from mediaforge.core.library.recordings import RecordingStore
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 # Przeglądarki dozwolone jako źródło sesji (opt-in). Zamknięta lista — nie przyjmujemy
-# dowolnego stringa do komendy zalogowanego pobierania.
-COOKIE_BROWSERS: tuple[str, ...] = ("chrome", "edge", "firefox", "brave", "vivaldi", "opera")
+# dowolnego stringa do komendy zalogowanego pobierania. Firefox PIERWSZY (domyślny w GUI):
+# na Windows przeglądarki Chromium mają App-Bound Encryption i yt-dlp nie odczyta ich cookies.
+COOKIE_BROWSERS: tuple[str, ...] = ("firefox", "chrome", "edge", "brave", "vivaldi", "opera")
+
+# Przeglądarki Chromium — na Windows szyfrują cookies (App-Bound Encryption / DPAPI) w sposób
+# nieodczytywalny dla yt-dlp (błędy #10927 DPAPI / #7271 „Could not copy"). Firefox działa.
+CHROMIUM_COOKIE_BROWSERS: frozenset[str] = frozenset(
+    {"chrome", "edge", "brave", "vivaldi", "opera"}
+)
+
+
+def chromium_cookie_hint_needed(browser: str, *, platform: str = sys.platform) -> bool:
+    """Czy pokazać ostrzeżenie o cookies: przeglądarka Chromium NA Windows (tam ABE blokuje)."""
+    return platform.startswith("win") and browser in CHROMIUM_COOKIE_BROWSERS
 
 
 # ── Czysty builder komendy yt-dlp (testowalny, egzekwuje granicę prawną) ──────
@@ -234,8 +246,23 @@ def _default_runner(command: list[str], on_line: LineCb | None = None) -> RunRes
     return RunResult(returncode=proc.returncode, tail="\n".join(tail))
 
 
-def _error_message(tail: str) -> str:
-    """Wyciąga czytelny POWÓD z ogona logu yt-dlp — linie ERROR albo ostatnie linie."""
+# Komunikat zastępujący surowy błąd yt-dlp o nieczytelnych cookies Chromium na Windows.
+COOKIE_DECRYPT_MESSAGE = (
+    "Nie można odczytać cookies z tej przeglądarki (szyfrowanie Windows) — użyj Firefoksa."
+)
+# Wzorce w logu yt-dlp sygnalizujące porażkę odszyfrowania/kopii cookies Chromium (ABE/DPAPI).
+_COOKIE_ERROR_PATTERNS: tuple[str, ...] = ("dpapi", "could not copy")
+
+
+def map_ytdlp_error(tail: str) -> str:
+    """Mapuje ogon logu yt-dlp na czytelny POWÓD dla ``jobs.error``.
+
+    Najpierw rozpoznaje porażkę odczytu cookies Chromium na Windows (ABE/DPAPI, błędy #10927/
+    #7271) → podpowiedź o Firefoksie zamiast surowego ERROR-a z linkiem do GitHuba. W innych
+    przypadkach zwraca linie ERROR (albo ostatnie linie logu).
+    """
+    if any(pattern in tail.lower() for pattern in _COOKIE_ERROR_PATTERNS):
+        return COOKIE_DECRYPT_MESSAGE
     lines = [line for line in tail.splitlines() if line.strip()]
     errors = [line for line in lines if line.lstrip().startswith("ERROR")]
     chosen = errors or lines[-3:]
@@ -328,7 +355,7 @@ class DownloaderEngine:
 
         result = self.runner(command, on_line)
         if result.returncode != 0:
-            raise RuntimeError(f"yt-dlp: {_error_message(result.tail)}")
+            raise RuntimeError(f"yt-dlp: {map_ytdlp_error(result.tail)}")
 
         info = _read_info_json(material_dir)
         media = _find_media_file(material_dir, info)
