@@ -44,12 +44,14 @@ Szkielet pakietu (`core`/`gui`/`cli`), `pyproject` + uv, ruff/mypy/pytest, CI (W
 
 **Akceptacja:** transkrypcja 90-min nagrania PL i EN; klik w tekst przeskakuje odtwarzanie; brak crasha na sm_120 (default whisper.cpp); na słabszej maszynie (Tier B) transkrypcja lokalna z mniejszym modelem; ręczne nadpisanie tieru i backendu działa.
 
-## ☐ S4 — Streszczenia i notatki edukacyjne
-**Gałąź:** `feat/s4-summary`
+## ☑ S4 — Streszczenia (przez gateway LiteLLM, z twardą granicą prywatności)
+**Gałąź:** `feat/s4-summaries`
 
-Klient **LiteLLM gateway** (lokal Devstral/Qwen + fallback chmura). **Rejestr dostawców per zadanie (`core/ai/providers.py`):** wybór Claude/ChatGPT/Gemini/DeepSeek osobno dla nazwy / streszczenia / długiego kontekstu / VLM / RAG; klucze per dostawca w keyring; walidacja możliwości (vision/długie okno). Przełącznik **„tylko lokalnie"** per kategoria/materiał. Style: krótkie / dokładne / w punktach / rozdziały. **Tryby dziedzinowe** (medyczny, techniczny, programistyczny, biznesowy, ogólny) — prompt wydobywa definicje, procedury, wzory, przeciwwskazania, pytania kontrolne. Notatka edukacyjna `.md`. **Auto-nazwa pliku** z AI (z sanityzacją pod Windows). Long-context: lokalnie do limitu okna, dłuższe → chmura; hierarchiczne streszczanie tylko gdy konieczne.
+**Dostarczony rdzeń (ten etap):** klient **LiteLLM gateway** jako JEDYNY tor (zero SDK/kluczy dostawców w apce; jedyny sekret = opcjonalny master key gatewaya w keyring). **Routing wrażliwości** (`core/ai/routing.py`): `resolve_route` + `assert_route_allowed` z polityką **domyślnie-lokalne (fail-safe)** — materiał wrażliwy, dopóki `cloud_ok` nie jest jawnie `True` (brak pola = `False`). Streszczenie **na kolejce `jobs`**: model LOKALNY → linia GPU (jeden model w VRAM, dzieli linię z transkrypcją); model CHMUROWY → linia I/O (nie blokuje GPU); linia dobierana przy enqueue wg `resolve_route`. Wyjście `summary.md` w folderze materiału + `summary_status`/`summary_path` (metadata.json + SQLite, podnoszone przez `rescan`). `cloud_ok` jako trwała własność materiału (checkbox w GUI). Podgląd streszczenia (Markdown), przycisk „Streszcz" (aktywny po transkrypcji), `doctor` wypisuje skonfigurowane modele streszczeń.
 
-**Akceptacja:** 4 style działają; wybór dostawcy per zadanie zapisany i routowany przez LiteLLM; ostrzeżenie przy modelu bez vision dla slajdów; „tylko lokalnie" blokuje wysyłkę do chmury; tryb medyczny generuje sensowną notatkę; materiał 3 h obsłużony (chmura) bez utraty spójności.
+**Odroczone do follow-upów S4 (nie w tym etapie — szersze funkcje z pierwotnego zakresu):** rejestr dostawców per zadanie w GUI (wybór Claude/ChatGPT/Gemini/DeepSeek per zadanie — model danych `core/ai/providers.py` istnieje), style (krótkie/dokładne/w punktach/rozdziały), **tryby dziedzinowe** (medyczny/techniczny/…), **auto-nazwa pliku** z AI, long-context z hierarchicznym streszczaniem. Wracają jako osobne, mniejsze gałęzie — rdzeń (gateway-only + granica prywatności + kolejka) jest fundamentem, na którym siadają.
+
+**Akceptacja (rdzeń):** streszczenie lokalne i chmurowe routowane przez gateway; **„bez zgody = wyłącznie lokalnie"** egzekwowane dwustopniowo (resolve wybiera, assert blokuje wrażliwy→chmura); padnięty gateway → czytelny błąd z URL-em; streszczenie lokalne serializowane z transkrypcją na linii GPU, chmurowe na I/O. Bramka zielona (ruff + mypy --strict + pytest).
 
 ## ☐ S5 — Pobieranie bezpośrednie (yt-dlp, bez DRM)
 **Gałąź:** `feat/s5-downloader`
@@ -115,6 +117,14 @@ ddagrab łapie cały monitor, nie zna okien. Capture okna po tytule usunięty z 
 
 **Doklejanie do istniejącego nagrania (append).**
 Przy kolizji nazwy (`fix/recorder-name-collision`) dajemy Nadpisz / Nową nazwę / Anuluj — **bez** opcji „doklej". Doklejanie do gotowego materiału wymaga wymuszenia identycznych parametrów sesji (rozdzielczość/fps/enkoder) i concat świadomego timestampów; przy segmentowej mechanice i concat kopią strumieni append o innych parametrach = plik uszkodzony/nieodtwarzalny od połowy. Rozważyć przy ciepłym pipeline (stały, rozgrzany capture+enkoder o znanych parametrach ułatwia bezpieczne dopisywanie).
+
+### Streszczenia / AI
+
+**Bezpośrednie API dostawców (fallback bez gatewaya).**
+Obecnie twarda granica: wyłącznie gateway LiteLLM (jeden punkt egzekwowania routingu wrażliwości i przechowywania kluczy). Gdyby operacyjnie przeszkadzało (gateway musi chodzić, żeby były podsumowania), dorobić bezpośredni tor API (anthropic/openai/gemini/deepseek — sondy providerów w doctorze już są) POD WARUNKAMI: routing wrażliwości (`resolve_route` + `assert_route_allowed`) egzekwowany identycznie w torze bezpośrednim; klucze w keyring; wspólny `Protocol` dla obu torów, żeby handler nie wiedział, którym idzie. Bez tych warunków bezpośredni tor rozmywa gwarancję prywatności — nie robić „na szybko".
+
+**Rejestr dostawców per zadanie w GUI + style / tryby dziedzinowe / auto-nazwa (follow-upy S4).**
+Rdzeń S4 dostarczył tor gateway + granicę prywatności + kolejkę. Do dorobienia jako osobne gałęzie: wybór modelu per zadanie w ustawieniach (model danych `core/ai/providers.py` istnieje, walidacja vision też), style streszczeń (krótkie/dokładne/w punktach/rozdziały), tryby dziedzinowe (medyczny/techniczny/programistyczny/biznesowy/ogólny), auto-nazwa pliku z AI (sanityzacja pod Windows), long-context z hierarchicznym streszczaniem (lokalnie do limitu okna, dłuższe → chmura). Świadomie odłożone, żeby najpierw utwardzić granicę prywatności i tor kolejki.
 
 ### Transkrypcja
 

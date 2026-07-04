@@ -49,6 +49,26 @@ def test_old_db_self_heals(tmp_path: Path) -> None:
     assert _columns(db) == cols
 
 
+def test_cloud_ok_added_to_old_db_defaults_zero(tmp_path: Path) -> None:
+    """cloud_ok dorabiane na starej bazie; istniejący wiersz dostaje 0 (fail-safe: lokalnie)."""
+    db = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE recordings (id INTEGER PRIMARY KEY, title TEXT)")
+    conn.execute("INSERT INTO recordings (title) VALUES ('sprzed S4')")
+    conn.commit()
+    conn.close()
+
+    RecordingStore(db)  # ensure_schema dorabia cloud_ok INTEGER DEFAULT 0
+    assert {"cloud_ok", "summary_path"} <= _columns(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        row = conn.execute("SELECT cloud_ok FROM recordings WHERE title = 'sprzed S4'").fetchone()
+    finally:
+        conn.close()
+    assert row[0] == 0  # stary wiersz jest wrażliwy (lokalnie), nie 1
+
+
 def test_fresh_db_ensure_schema_is_noop(tmp_path: Path) -> None:
     """Świeża baza (pełny schemat) → ponowne ensure_schema nic nie dodaje (brak ALTER)."""
     db = tmp_path / "fresh.sqlite3"

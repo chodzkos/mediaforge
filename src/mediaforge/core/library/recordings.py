@@ -105,6 +105,8 @@ def _row_to_metadata(row: Row, tags: list[str]) -> MaterialMetadata:
         transcript_json=row["transcript_json"],
         transcript_srt=row["transcript_srt"],
         summary_status=str(row["summary_status"]),
+        summary_path=row["summary_path"],
+        cloud_ok=bool(row["cloud_ok"]),  # INTEGER 0/1 → bool (fail-safe: brak/0 = lokalnie)
         status=str(row["status"]),
     )
 
@@ -261,6 +263,8 @@ class RecordingStore:
                 meta.transcript_json,
                 meta.transcript_srt,
                 meta.summary_status,
+                meta.summary_path,
+                int(meta.cloud_ok),  # bool → INTEGER 0/1
                 meta.status,
             )
             if existing is not None:
@@ -269,7 +273,8 @@ class RecordingStore:
                     "UPDATE recordings SET title=?, source_type=?, source_url=?, presenter=?, "
                     "organizer=?, category=?, created_at=?, duration=?, folder=?, video_path=?, "
                     "audio_path=?, thumbnail_path=?, transcript_status=?, transcript_json=?, "
-                    "transcript_srt=?, summary_status=?, status=? WHERE id=?",
+                    "transcript_srt=?, summary_status=?, summary_path=?, cloud_ok=?, status=? "
+                    "WHERE id=?",
                     (*values, rec_id),
                 )
             else:
@@ -277,8 +282,8 @@ class RecordingStore:
                     "INSERT INTO recordings (title, source_type, source_url, presenter, organizer, "
                     "category, created_at, duration, folder, video_path, audio_path, "
                     "thumbnail_path, transcript_status, transcript_json, transcript_srt, "
-                    "summary_status, status) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "summary_status, summary_path, cloud_ok, status) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     values,
                 )
                 rec_id = int(cur.lastrowid or 0)

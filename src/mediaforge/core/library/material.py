@@ -40,6 +40,10 @@ class MaterialMetadata:
     transcript_json: str | None = None  # plik .json whisper.cpp (w folderze materiału)
     transcript_srt: str | None = None
     summary_status: str = "none"
+    summary_path: str | None = None  # plik streszczenia .md w folderze materiału
+    # TWARDA GRANICA prywatności (fail-safe): materiał jest wrażliwy, DOPÓKI użytkownik jawnie
+    # nie ustawi cloud_ok=True. Brak pola w metadata.json = False (zapomnienie = bezpieczne).
+    cloud_ok: bool = False
     status: str = "recorded"
 
     def __post_init__(self) -> None:
@@ -65,6 +69,8 @@ class MaterialMetadata:
             "transcript_json": self.transcript_json,
             "transcript_srt": self.transcript_srt,
             "summary_status": self.summary_status,
+            "summary_path": self.summary_path,
+            "cloud_ok": self.cloud_ok,
             "status": self.status,
         }
 
@@ -90,6 +96,9 @@ class MaterialMetadata:
             transcript_json=_opt_str(data.get("transcript_json")),
             transcript_srt=_opt_str(data.get("transcript_srt")),
             summary_status=str(data.get("summary_status", "none")),
+            summary_path=_opt_str(data.get("summary_path")),
+            # Brak pola = False: zapomnienie zgody jest bezpieczne (materiał zostaje lokalnie).
+            cloud_ok=bool(data.get("cloud_ok", False)),
             status=str(data.get("status", "recorded")),
         )
 

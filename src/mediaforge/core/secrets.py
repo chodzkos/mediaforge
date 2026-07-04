@@ -17,7 +17,7 @@ from __future__ import annotations
 import contextlib
 
 import keyring
-from keyring.errors import PasswordDeleteError
+from keyring.errors import KeyringError, PasswordDeleteError
 
 _SERVICE = "mediaforge"
 
@@ -27,6 +27,9 @@ _API_KEY_PREFIX = "api_key:"
 # Stałe nazwy pojedynczych sekretów (poza rejestrem dostawców).
 HF_TOKEN_KEY = "hf_token"  # gated pyannote — token Hugging Face
 TELEGRAM_TOKEN_KEY = "telegram_bot_token"
+# Master key gatewaya LiteLLM — JEDYNY klucz mieszkający w mediaforge (opcjonalny; klucze
+# dostawców trzyma config gatewaya, nie aplikacja). W keyring, nigdy w configu/plaintext.
+GATEWAY_MASTER_KEY = "litellm_master_key"
 
 
 def provider_api_key_name(provider: str) -> str:
@@ -35,8 +38,16 @@ def provider_api_key_name(provider: str) -> str:
 
 
 def get_secret(key: str) -> str | None:
-    """Czyta sekret z keyring (``None``, gdy brak)."""
-    return keyring.get_password(_SERVICE, key)
+    """Czyta sekret z keyring (``None``, gdy brak albo brak backendu keyring).
+
+    Brak działającego backendu (np. headless/CI bez magazynu poświadczeń) traktujemy jak
+    „brak sekretu" (``None``) — odczyt sekretu nigdy nie wywraca aplikacji. Zapis
+    (:func:`set_secret`) świadomie NIE tłumi błędów: nieudane zapisanie sekretu ma być widoczne.
+    """
+    try:
+        return keyring.get_password(_SERVICE, key)
+    except KeyringError:
+        return None
 
 
 def set_secret(key: str, value: str) -> None:

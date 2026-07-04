@@ -1,10 +1,15 @@
-"""Handlery kolejki: transkrypcja i import jako joby (synchroniczny executor, atrapy)."""
+"""Handlery kolejki: transkrypcja, import i streszczenie jako joby (executor + atrapy)."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import json
+import urllib.error
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
+import pytest
+
+from mediaforge.core.ai.summarize import SummaryClient, SummaryConfig
 from mediaforge.core.ai.transcribe import (
     TranscribeOptions,
     Transcript,
@@ -13,14 +18,22 @@ from mediaforge.core.ai.transcribe import (
 from mediaforge.core.engines.import_engine import ImporterEngine
 from mediaforge.core.jobs import JobQueue, JobStatus, JobStore
 from mediaforge.core.jobs.handlers import (
+    DEFAULT_LANES,
+    DEFAULT_ROUTES,
     JOB_IMPORT,
+    JOB_SUMMARIZE,
     JOB_TRANSCRIBE,
+    enqueue_summarize,
     make_import_handler,
+    make_summarize_handler,
     make_transcribe_handler,
 )
 from mediaforge.core.library.db import Database
 from mediaforge.core.library.material import MaterialMetadata, read_metadata, write_metadata
 from mediaforge.core.library.recordings import RecordingStore
+
+_LOCAL = "ollama/qwen3:27b"
+_CLOUD = "anthropic/claude-3"
 
 
 def _db(tmp_path: Path) -> Path:
@@ -178,3 +191,136 @@ def test_import_job_creates_material(tmp_path: Path) -> None:
     materials = store.list_materials()
     assert len(materials) == 1
     assert materials[0][2].title == "clip" and materials[0][2].category == "Podcast"
+
+
+# ── Streszczenie (atrapa transportu gatewaya, bez sieci) ──────────────────────
+
+
+def _seed_transcribed(
+    store: RecordingStore, lib: Path, title: str, *, cloud_ok: bool = False
+) -> tuple[int, Path]:
+    """Materiał z ukończoną transkrypcją (whisper.cpp json w folderze) — wejście streszczenia."""
+    folder = lib / title
+    meta = MaterialMetadata(
+        title=title,
+        created_at="t",
+        audio_path=f"{title}.wav",
+        transcript_status="done",
+        transcript_json=f"{title}.json",
+        cloud_ok=cloud_ok,
+    )
+    write_metadata(folder, meta)
+    (folder / f"{title}.json").write_text(
+        json.dumps({"transcription": [{"text": "Zdanie pierwsze."}, {"text": "Zdanie drugie."}]}),
+        encoding="utf-8",
+    )
+    return store.upsert_material(folder, read_metadata(folder)), folder
+
+
+def _capturing_client(*, fail: bool = False) -> tuple[SummaryClient, dict[str, object]]:
+    """Klient gatewaya z transportem-atrapą: zapisuje payload albo udaje padnięty gateway."""
+    captured: dict[str, object] = {}
+
+    def transport(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> bytes:
+        if fail:
+            raise urllib.error.URLError("connection refused")
+        captured["payload"] = json.loads(body)
+        return json.dumps(
+            {"choices": [{"message": {"content": "# Streszczenie\nTreść."}}]}
+        ).encode()
+
+    client = SummaryClient(SummaryConfig(base_url="http://gw:4000"), transport=transport)
+    return client, captured
+
+
+def test_summarize_job_local_happy_path(tmp_path: Path) -> None:
+    """Lokalne streszczenie: summary.md powstaje, statusy set, model lokalny, przeżywa rescan."""
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, folder = _seed_transcribed(store, tmp_path / "lib", "Wyklad", cloud_ok=False)
+    client, captured = _capturing_client()
+
+    queue = JobQueue(JobStore(db), lanes=DEFAULT_LANES, routes=DEFAULT_ROUTES)
+    queue.register(
+        JOB_SUMMARIZE,
+        make_summarize_handler(store, client, local_model=_LOCAL, cloud_model=_CLOUD),
+    )
+    enqueue_summarize(store, JobStore(db), rec_id, local_model=_LOCAL, cloud_model=_CLOUD)
+
+    assert queue.process_pending() == 1
+    # Model lokalny mimo skonfigurowanej chmury (cloud_ok=False → fail-safe).
+    assert captured["payload"]["model"] == _LOCAL  # type: ignore[index]
+    # summary.md w folderze materiału (źródło prawdy) + statusy.
+    assert (folder / "summary.md").read_text(encoding="utf-8").startswith("# Streszczenie")
+    meta = read_metadata(folder)
+    assert meta.summary_status == "done" and meta.summary_path == "summary.md"
+    material = store.get_material(rec_id)
+    assert material is not None and material[1].summary_status == "done"
+    # Round-trip: summary_status przeżywa rescan (nie zerowany).
+    store.rescan(tmp_path / "lib")
+    again = store.get_material(rec_id)
+    assert again is not None and again[1].summary_status == "done"
+
+
+def test_summarize_cloud_ok_routes_cloud_on_io_lane(tmp_path: Path) -> None:
+    """cloud_ok=True + model chmurowy → trasa chmurowa (model cloud), linia IO (nie blokuje GPU)."""
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, _folder = _seed_transcribed(store, tmp_path / "lib", "M", cloud_ok=True)
+    client, captured = _capturing_client()
+
+    job_id = enqueue_summarize(store, JobStore(db), rec_id, local_model=_LOCAL, cloud_model=_CLOUD)
+    job = JobStore(db).get(job_id)
+    assert job is not None and job.payload["lane"] == "io"  # chmura → linia IO
+
+    queue = JobQueue(JobStore(db), lanes=DEFAULT_LANES, routes=DEFAULT_ROUTES)
+    queue.register(
+        JOB_SUMMARIZE,
+        make_summarize_handler(store, client, local_model=_LOCAL, cloud_model=_CLOUD),
+    )
+    queue.process_pending()
+    assert captured["payload"]["model"] == _CLOUD  # type: ignore[index]
+
+
+def test_summarize_cloud_ok_false_uses_gpu_lane_and_local_model(tmp_path: Path) -> None:
+    """cloud_ok=False → linia GPU i model lokalny, nawet gdy model chmurowy jest skonfigurowany."""
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, _folder = _seed_transcribed(store, tmp_path / "lib", "M", cloud_ok=False)
+
+    job_id = enqueue_summarize(store, JobStore(db), rec_id, local_model=_LOCAL, cloud_model=_CLOUD)
+    job = JobStore(db).get(job_id)
+    assert job is not None and job.payload["lane"] == "gpu"  # lokalnie → linia GPU
+
+
+def test_summarize_gateway_down_job_error_with_base_url(tmp_path: Path) -> None:
+    """Padnięty gateway → job błędny, komunikat zawiera base_url (to gateway, nie apka)."""
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, _folder = _seed_transcribed(store, tmp_path / "lib", "M", cloud_ok=False)
+    client, _ = _capturing_client(fail=True)
+
+    queue = JobQueue(JobStore(db), lanes=DEFAULT_LANES, routes=DEFAULT_ROUTES)
+    queue.register(
+        JOB_SUMMARIZE,
+        make_summarize_handler(store, client, local_model=_LOCAL, cloud_model=_CLOUD),
+    )
+    job_id = enqueue_summarize(store, JobStore(db), rec_id, local_model=_LOCAL, cloud_model=_CLOUD)
+    # max_retries domyślnie 3 — dobijamy do failed powtórzeniami.
+    for _ in range(4):
+        queue.process_pending()
+
+    failed = JobStore(db).get(job_id)
+    assert failed is not None and failed.status is JobStatus.FAILED
+    assert failed.error_message and "http://gw:4000" in failed.error_message
+
+
+def test_summarize_enqueue_refused_without_transcript(tmp_path: Path) -> None:
+    """Brak transkryptu → odmowa enqueue (ValueError „najpierw transkrypcja"), nic w kolejce."""
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, _folder = _seed_material(store, tmp_path / "lib", "BezTranskryptu")  # transcript none
+
+    with pytest.raises(ValueError, match=r"[Tt]ranskryp"):
+        enqueue_summarize(store, JobStore(db), rec_id, local_model=_LOCAL, cloud_model=_CLOUD)
+    assert JobStore(db).list_jobs() == []

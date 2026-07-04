@@ -15,6 +15,7 @@ from chodzkos_gui_kit.qt.widgets import LogView
 from PySide6.QtCore import QPoint, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -27,11 +28,14 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
 from mediaforge.core import config as cfg_mod
+from mediaforge.core import secrets
+from mediaforge.core.ai.summarize import SummaryClient, SummaryConfig
 from mediaforge.core.ai.transcribe import WhisperCppBackend
 from mediaforge.core.engines.import_engine import ImporterEngine
 from mediaforge.core.jobs import JobQueue, JobStatus, JobStore
@@ -39,8 +43,11 @@ from mediaforge.core.jobs.handlers import (
     DEFAULT_LANES,
     DEFAULT_ROUTES,
     JOB_IMPORT,
+    JOB_SUMMARIZE,
     JOB_TRANSCRIBE,
+    enqueue_summarize,
     make_import_handler,
+    make_summarize_handler,
     make_transcribe_handler,
 )
 from mediaforge.core.library.db import Database
@@ -78,6 +85,15 @@ class LibraryWidget(QWidget):
         self._queue = JobQueue(self._jobs_store, lanes=DEFAULT_LANES, routes=DEFAULT_ROUTES)
         self._queue.register(JOB_IMPORT, make_import_handler(ImporterEngine(store=self._store)))
         self._queue.register(JOB_TRANSCRIBE, make_transcribe_handler(self._store, self._backend()))
+        self._queue.register(
+            JOB_SUMMARIZE,
+            make_summarize_handler(
+                self._store,
+                self._summary_client(),
+                local_model=cfg_mod.get_summary_model_local(self._config),
+                cloud_model=cfg_mod.get_summary_model_cloud(self._config),
+            ),
+        )
         self._seen: dict[int, str] = {}
         self._poll = QTimer(self)
         self._poll.setInterval(800)
@@ -93,6 +109,20 @@ class LibraryWidget(QWidget):
             whisper_cli=cfg_mod.get_whispercpp_path(self._config) or "whisper-cli",
             threads=cfg_mod.get_whisper_threads(self._config),
         )
+
+    def _summary_client(self) -> SummaryClient:
+        """Klient gatewaya LiteLLM z configu — endpoint/język/limity + opcjonalny master key.
+
+        Master key (jedyny sekret aplikacji) czytany z keyring, nie z configu/plaintext.
+        """
+        config = SummaryConfig(
+            base_url=cfg_mod.get_litellm_base_url(self._config) or "http://localhost:4000",
+            language=cfg_mod.get_summary_language(self._config),
+            max_tokens=cfg_mod.get_summary_max_tokens(self._config),
+            timeout=cfg_mod.get_summary_timeout(self._config),
+            api_key=secrets.get_secret(secrets.GATEWAY_MASTER_KEY),
+        )
+        return SummaryClient(config)
 
     # ── Cykl życia kolejki (start z okna głównego; nie w testach) ─────────────
 
@@ -180,6 +210,10 @@ class LibraryWidget(QWidget):
         self._tags = QLineEdit()
         self._tags.setPlaceholderText("tagi po przecinku")
         form.addRow("Tagi:", self._tags)
+        # Zgoda na chmurę (fail-safe): bez niej streszczenie idzie WYŁĄCZNIE lokalnie.
+        self._cloud_ok = QCheckBox("Zezwól na przetwarzanie w chmurze")
+        self._cloud_ok.setToolTip("Bez zgody materiał jest przetwarzany wyłącznie lokalnie")
+        form.addRow("Prywatność:", self._cloud_ok)
         col.addLayout(form)
 
         # „Info" POZA formularzem: pełna szerokość + zawijanie pcha przyciski w dół, a nie
@@ -198,6 +232,12 @@ class LibraryWidget(QWidget):
         self._transcribe_btn.setToolTip("Dodaj transkrypcję (whisper.cpp) do kolejki")
         self._transcribe_btn.clicked.connect(self._on_transcribe)
         actions.addWidget(self._transcribe_btn)
+        self._summarize_btn = QPushButton("Streszcz")
+        self._summarize_btn.setToolTip(
+            "Streszczenie transkryptu przez gateway (aktywne po transkrypcji)"
+        )
+        self._summarize_btn.clicked.connect(self._on_summarize)
+        actions.addWidget(self._summarize_btn)
         self._open_btn = QPushButton("Otwórz folder")
         self._open_btn.clicked.connect(self._open_folder)
         actions.addWidget(self._open_btn)
@@ -207,7 +247,14 @@ class LibraryWidget(QWidget):
         self._delete_btn.clicked.connect(self._on_delete)
         actions.addWidget(self._delete_btn)
         col.addLayout(actions)
-        col.addStretch(1)
+
+        # Podgląd streszczenia (summary.md) — Markdown renderowany na żywo z pliku w folderze.
+        col.addWidget(QLabel("Streszczenie:"))
+        self._summary_view = QTextBrowser()
+        self._summary_view.setMinimumHeight(120)
+        self._summary_view.setOpenExternalLinks(True)
+        self._summary_view.setPlaceholderText("(brak streszczenia — użyj „Streszcz”)")
+        col.addWidget(self._summary_view, stretch=1)
         self._set_details_enabled(False)
         return panel
 
@@ -257,6 +304,7 @@ class LibraryWidget(QWidget):
     def _item_label(meta: MaterialMetadata) -> str:
         date = meta.created_at[:10] if meta.created_at else "—"
         badge = "  ·  📝" if meta.transcript_status == "done" else ""
+        badge += "  ·  🧾" if meta.summary_status == "done" else ""
         return f"{meta.title}  ·  {date}  ·  {_fmt_duration(meta.duration)}{badge}"
 
     # ── Wybór / podgląd ───────────────────────────────────────────────────────
@@ -273,13 +321,17 @@ class LibraryWidget(QWidget):
         self._organizer.setText(meta.organizer or "")
         self._category.setText(meta.category or "")
         self._tags.setText(", ".join(meta.tags))
+        self._cloud_ok.setChecked(meta.cloud_ok)
         self._info.setText(
             f"Data: {meta.created_at[:19] or '—'}  ·  Długość: {_fmt_duration(meta.duration)}  ·  "
             f"Źródło: {meta.source_type}  ·  Transkrypcja: {meta.transcript_status}  ·  "
             f"Streszczenie: {meta.summary_status}"
         )
         self._set_details_enabled(True)
+        # „Streszcz" tylko po transkrypcji (handler i tak odmówi bez transkryptu — to UX).
+        self._summarize_btn.setEnabled(meta.transcript_status == "done")
         self._show_thumbnail(folder, meta)
+        self._show_summary(folder, meta)
 
     def _show_thumbnail(self, folder: Path, meta: MaterialMetadata) -> None:
         if meta.thumbnail_path:
@@ -290,6 +342,17 @@ class LibraryWidget(QWidget):
                 )
                 return
         self._thumb.setText("(brak podglądu)")
+
+    def _show_summary(self, folder: Path, meta: MaterialMetadata) -> None:
+        """Renderuje summary.md (źródło prawdy) jako Markdown; brak pliku → czyści podgląd."""
+        if meta.summary_path:
+            path = folder / meta.summary_path
+            try:
+                self._summary_view.setMarkdown(path.read_text(encoding="utf-8"))
+                return
+            except OSError:
+                pass
+        self._summary_view.clear()
 
     # ── Edycja ────────────────────────────────────────────────────────────────
 
@@ -304,6 +367,7 @@ class LibraryWidget(QWidget):
             organizer=self._organizer.text().strip() or None,
             category=self._category.text().strip() or None,
             tags=[t.strip() for t in self._tags.text().split(",") if t.strip()],
+            cloud_ok=self._cloud_ok.isChecked(),
         )
         write_metadata(folder, updated)  # metadata.json = źródło prawdy
         self._store.upsert_material(folder, updated)  # synchronizacja indeksu
@@ -390,6 +454,34 @@ class LibraryWidget(QWidget):
         self._jobs_store.enqueue(JOB_TRANSCRIBE, recording_id=rec_id)
         self._log.append_line(f"Transkrypcja w kolejce: {meta.title}", "queued")
 
+    def _on_summarize(self) -> None:
+        """Kolejkuje streszczenie bieżącego materiału (lokalnie/chmura wg cloud_ok i configu).
+
+        Linia (GPU/IO) dobierana w :func:`enqueue_summarize` wg trasy; odmowa bez transkryptu.
+        """
+        if self._current is None:
+            return
+        if not cfg_mod.get_summary_model_local(self._config):
+            self._log.append_line(
+                "Ustaw summary_model_local w configu (sprawdź `doctor`) — brak modelu lokalnego.",
+                "error",
+            )
+            return
+        rec_id, _folder, meta = self._current
+        try:
+            enqueue_summarize(
+                self._store,
+                self._jobs_store,
+                rec_id,
+                local_model=cfg_mod.get_summary_model_local(self._config),
+                cloud_model=cfg_mod.get_summary_model_cloud(self._config),
+            )
+        except ValueError as exc:  # brak transkryptu / materiał nie istnieje
+            self._log.append_line(f"Nie streszczono «{meta.title}»: {exc}", "error")
+            return
+        where = "chmura" if meta.cloud_ok else "lokalnie"
+        self._log.append_line(f"Streszczenie w kolejce ({where}): {meta.title}", "queued")
+
     # ── Polling statusów zadań (QTimer; bez sygnałów z wątków roboczych) ──────
 
     def _poll_jobs(self) -> None:
@@ -426,8 +518,10 @@ class LibraryWidget(QWidget):
             self._organizer,
             self._category,
             self._tags,
+            self._cloud_ok,
             self._save_btn,
             self._transcribe_btn,
+            self._summarize_btn,
             self._open_btn,
             self._delete_btn,
         ):
@@ -436,6 +530,8 @@ class LibraryWidget(QWidget):
     def _clear_details(self) -> None:
         for edit in (self._title, self._presenter, self._organizer, self._category, self._tags):
             edit.clear()
+        self._cloud_ok.setChecked(False)
         self._info.clear()
         self._thumb.setText("(brak podglądu)")
+        self._summary_view.clear()
         self._set_details_enabled(False)

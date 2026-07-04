@@ -12,24 +12,33 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
+from mediaforge.core.ai.routing import ModelRoute, assert_route_allowed, resolve_route
+from mediaforge.core.ai.summarize import SummaryClient, read_transcript_text
 from mediaforge.core.ai.transcribe import TranscribeOptions, TranscriptionBackend
 from mediaforge.core.engines.import_engine import ImporterEngine
-from mediaforge.core.jobs.store import Job
+from mediaforge.core.jobs.store import Job, JobStore
 from mediaforge.core.library.material import write_metadata
 from mediaforge.core.library.recordings import RecordingStore
 
 # Typy zadań (job_type) używane przez kolejkę.
 JOB_TRANSCRIBE = "transcribe"
 JOB_IMPORT = "import"
+JOB_SUMMARIZE = "summarize"
 
 # Linie wykonawcze. GPU = jeden executor (max_workers=1) dzielony przez WSZYSTKIE zadania
-# modelowe (transkrypcja, później VLM/LLM) → tylko jeden model w VRAM naraz (sequential VRAM
-# z CLAUDE.md). IO = import (kopia+ffmpeg), niezależny od GPU.
+# modelowe (transkrypcja, streszczenie modelem LOKALNYM, później VLM) → tylko jeden model w
+# VRAM naraz (sequential VRAM z CLAUDE.md). IO = import (kopia+ffmpeg) oraz streszczenie
+# modelem CHMUROWYM (żądanie sieciowe, nie obciąża GPU) — niezależne od GPU.
 GPU_LANE = "gpu"
 IO_LANE = "io"
-# Domyślny rozmiar linii i trasy job_type→linia (rozszerzane o JOB_VLM/JOB_LLM → GPU_LANE).
+# Domyślny rozmiar linii i trasy job_type→linia. JOB_SUMMARIZE domyślnie na GPU (wariant
+# lokalny); wariant chmurowy nadpisuje linię na IO w momencie enqueue (payload['lane']).
 DEFAULT_LANES: dict[str, int] = {GPU_LANE: 1, IO_LANE: 2}
-DEFAULT_ROUTES: dict[str, str] = {JOB_TRANSCRIBE: GPU_LANE, JOB_IMPORT: IO_LANE}
+DEFAULT_ROUTES: dict[str, str] = {
+    JOB_TRANSCRIBE: GPU_LANE,
+    JOB_IMPORT: IO_LANE,
+    JOB_SUMMARIZE: GPU_LANE,
+}
 
 _ProgressCb = Callable[[float], None]
 _Handler = Callable[[Job, _ProgressCb], None]
@@ -76,6 +85,86 @@ def make_transcribe_handler(
         progress(1.0)
 
     return handler
+
+
+def summarize_lane(route: ModelRoute) -> str:
+    """Linia dla streszczenia wg trasy: lokalna → GPU (jeden model w VRAM), chmurowa → IO.
+
+    Decyzja podejmowana w momencie enqueue (na podstawie :func:`resolve_route`): streszczenie
+    chmurowe to żądanie sieciowe, nie obciąża VRAM → idzie linią I/O i nie blokuje transkrypcji.
+    """
+    return IO_LANE if route.is_cloud else GPU_LANE
+
+
+def make_summarize_handler(
+    store: RecordingStore,
+    client: SummaryClient,
+    *,
+    local_model: str | None,
+    cloud_model: str | None,
+) -> _Handler:
+    """Handler streszczenia: materiał → resolve_route → assert → gateway → summary.md + statusy.
+
+    Egzekucja granicy prywatności jest podwójna: :func:`resolve_route` wybiera trasę wg
+    ``cloud_ok`` materiału, a :func:`assert_route_allowed` (ostatnia linia obrony tuż przed
+    wysyłką) blokuje wrażliwy materiał na trasie chmurowej. Zapis: ``summary.md`` w folderze
+    materiału (źródło prawdy) + ``summary_status='done'`` + ścieżka w metadanych; ``replace``
+    na istniejących metadanych nie zeruje pozostałych pól.
+    """
+
+    def handler(job: Job, progress: _ProgressCb) -> None:
+        if job.recording_id is None:
+            raise ValueError("summarize: brak recording_id w zadaniu")
+        material = store.get_material(job.recording_id)
+        if material is None:
+            raise ValueError(f"summarize: materiał {job.recording_id} nie istnieje")
+        folder, meta = material
+        if meta.transcript_status != "done" or not meta.transcript_json:
+            raise ValueError("summarize: brak transkryptu (najpierw transkrypcja)")
+
+        route = resolve_route(
+            cloud_ok=meta.cloud_ok, local_model=local_model, cloud_model=cloud_model
+        )
+        assert_route_allowed(route, cloud_ok=meta.cloud_ok)  # ostatnia linia obrony
+
+        progress(0.1)
+        text = read_transcript_text(folder / meta.transcript_json)
+        summary = client.summarize(text, route)  # GatewayError → job.error z base_url
+        summary_path = folder / "summary.md"
+        summary_path.write_text(summary, encoding="utf-8")
+
+        updated = replace(meta, summary_status="done", summary_path=summary_path.name)
+        write_metadata(folder, updated)  # metadata.json = źródło prawdy
+        store.upsert_material(folder, updated)  # indeks SQLite
+        progress(1.0)
+
+    return handler
+
+
+def enqueue_summarize(
+    store: RecordingStore,
+    jobs: JobStore,
+    recording_id: int,
+    *,
+    local_model: str | None,
+    cloud_model: str | None,
+) -> int:
+    """Kolejkuje streszczenie: odmawia bez transkryptu, dobiera linię wg trasy (resolve_route).
+
+    Odmowa (``ValueError``) gdy materiał nie istnieje albo ``transcript_status != done`` —
+    „najpierw transkrypcja". Linia wybierana TU (nie w handlerze) na podstawie zgody materiału
+    i skonfigurowanych modeli: lokalna → GPU, chmurowa → IO (payload['lane']). Zwraca id joba.
+    """
+    material = store.get_material(recording_id)
+    if material is None:
+        raise ValueError(f"summarize: materiał {recording_id} nie istnieje")
+    _folder, meta = material
+    if meta.transcript_status != "done":
+        raise ValueError("Najpierw transkrypcja — brak transkryptu do streszczenia.")
+    route = resolve_route(cloud_ok=meta.cloud_ok, local_model=local_model, cloud_model=cloud_model)
+    return jobs.enqueue(
+        JOB_SUMMARIZE, recording_id=recording_id, payload={"lane": summarize_lane(route)}
+    )
 
 
 def make_import_handler(engine: ImporterEngine) -> _Handler:

@@ -20,6 +20,8 @@ import mediaforge.core.jobs
 import mediaforge.core.library
 import mediaforge.core.ai.providers
 import mediaforge.core.ai.transcribe
+import mediaforge.core.ai.routing
+import mediaforge.core.ai.summarize
 import mediaforge.core.engines.base
 leaked = sorted(m for m in sys.modules if m == "PySide6" or m.startswith("PySide6."))
 assert not leaked, f"core importuje Qt: {leaked}"
