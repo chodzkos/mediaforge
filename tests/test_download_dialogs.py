@@ -61,6 +61,23 @@ def test_download_dialog_cookies_opt_in_flows_to_payload(
     assert payload["cookies_browser"] == "firefox"  # tylko po jawnym opt-in
 
 
+def test_download_dialog_cookie_hint_visibility(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hint o cookies Chromium widoczny dopiero po opt-in i dla przeglądarki wymagającej hintu."""
+    _isolate(monkeypatch, tmp_path)
+    # Wymuś „przeglądarka wymaga hintu" niezależnie od platformy testowej (CI = Linux).
+    monkeypatch.setattr(
+        "mediaforge.gui.download_dialog.chromium_cookie_hint_needed", lambda _b: True
+    )
+    dialog = DownloadDialog()
+    qtbot.addWidget(dialog)
+    # Domyślnie cookies wyłączone → hint ukryty (nawet gdy przeglądarka byłaby „chromium").
+    assert not dialog._cookie_hint.isVisibleTo(dialog)
+    dialog._use_cookies.setChecked(True)  # opt-in → wołany _update_cookie_hint
+    assert dialog._cookie_hint.isVisibleTo(dialog)
+
+
 def test_podcast_dialog_loads_and_enqueues_selected(
     qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

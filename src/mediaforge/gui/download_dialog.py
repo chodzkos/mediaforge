@@ -8,6 +8,7 @@ aplikacja nie widzi ani nie zapisuje poświadczeń (granica prawna, patrz CLAUDE
 
 from __future__ import annotations
 
+from chodzkos_gui_kit.qt.theme import current_palette
 from chodzkos_gui_kit.qt.widgets import LogView
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -16,17 +17,28 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from mediaforge.core import config as cfg_mod
-from mediaforge.core.engines.download_engine import COOKIE_BROWSERS, domain_of
+from mediaforge.core.engines.download_engine import (
+    COOKIE_BROWSERS,
+    chromium_cookie_hint_needed,
+    domain_of,
+)
 from mediaforge.core.jobs import JobStore
 from mediaforge.core.jobs.handlers import JOB_DOWNLOAD
 from mediaforge.core.library.db import Database
 from mediaforge.core.library.profiles import SourceProfile, SourceProfileStore
+
+# Ostrzeżenie o cookies Chromium na Windows (App-Bound Encryption — yt-dlp ich nie odczyta).
+_CHROMIUM_COOKIE_HINT = (
+    "Chrome/Edge/Opera na Windows szyfrują cookies w sposób nieodczytywalny dla yt-dlp — "
+    "użyj Firefoksa (zaloguj się w nim na stronę i zamknij go przed pobraniem)."
+)
 
 
 class DownloadDialog(QDialog):
@@ -64,13 +76,22 @@ class DownloadDialog(QDialog):
             "Aplikacja nie widzi ani nie zapisuje haseł. Domyślnie wyłączone."
         )
         self._browser = QComboBox()
-        self._browser.addItems(COOKIE_BROWSERS)
+        self._browser.addItems(COOKIE_BROWSERS)  # firefox pierwszy = domyślny
         self._browser.setEnabled(False)
         self._use_cookies.toggled.connect(self._browser.setEnabled)
+        self._use_cookies.toggled.connect(self._update_cookie_hint)
+        self._browser.currentTextChanged.connect(self._update_cookie_hint)
         cookies_row.addWidget(self._use_cookies)
         cookies_row.addWidget(self._browser)
         cookies_row.addStretch(1)
         form.addRow("Logowanie:", cookies_row)
+
+        # Inline hint (amber, jak ostrzeżenie o loopbacku): Chromium na Windows = cookies nieczyt.
+        self._cookie_hint = QLabel(_CHROMIUM_COOKIE_HINT)
+        self._cookie_hint.setWordWrap(True)
+        self._cookie_hint.setStyleSheet(f"color: {current_palette().amber};")
+        self._cookie_hint.setVisible(False)
+        form.addRow("", self._cookie_hint)
 
         self._title = QLineEdit()
         self._title.setPlaceholderText("(puste = tytuł z metadanych źródła)")
@@ -102,6 +123,13 @@ class DownloadDialog(QDialog):
         ok.clicked.connect(self._on_download)
         buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(self.reject)
         root.addWidget(buttons)
+
+    def _update_cookie_hint(self) -> None:
+        """Pokazuje ostrzeżenie, gdy wybrano sesję przeglądarki Chromium na Windows (ABE)."""
+        self._cookie_hint.setVisible(
+            self._use_cookies.isChecked()
+            and chromium_cookie_hint_needed(self._browser.currentText())
+        )
 
     def _prefill_from_profile(self) -> None:
         """Po wpisaniu URL-a: prefill metadanych z profilu domeny (jeśli istnieje)."""

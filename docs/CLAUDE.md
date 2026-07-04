@@ -33,7 +33,13 @@ których użytkownik MA wykupiony/przyznany dostęp (kursy, webinary członkowsk
   widzi, nie zapisuje i nie transportuje poświadczeń. Builder komendy pobierania **nigdy** nie
   emituje `--username`/`--password` (jest na to test-kontrakt granicy).
 - **Cookies to opcja per pobranie/per profil (opt-in)** — checkbox „Użyj sesji przeglądarki:
-  [chrome/edge/firefox]", NIGDY domyślnie włączona.
+  [firefox/chrome/edge]", NIGDY domyślnie włączona.
+- **Ograniczenie Windows: cookies Chromium są nieodczytywalne.** Chrome/Edge/Opera (i inne
+  Chromium) na Windows szyfrują cookies przez **App-Bound Encryption** — yt-dlp ich nie
+  odszyfruje (błędy DPAPI #10927 / „Could not copy" #7271). To NIE jest do obejścia (nie
+  zrzucaj kluczy, nie dekryptuj ABE — patrz pkt 1). Rozwiązanie dla użytkownika: **Firefox**
+  (domyślna przeglądarka w wyborze sesji). GUI pokazuje inline hint przy wyborze Chromium na
+  Windows, a błąd yt-dlp jest mapowany na czytelną podpowiedź o Firefoksie (nie surowy ERROR).
 
 Nie rozmywaj tej granicy w przyszłych sesjach: żaden „wygodny" tryb logowania hasłem, żaden
 headless-scraping omijający 2FA (patrz pkt 2). Cookies-from-browser to jedyny tor zalogowany.

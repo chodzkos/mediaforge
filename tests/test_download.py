@@ -8,13 +8,16 @@ from pathlib import Path
 import pytest
 
 from mediaforge.core.engines.download_engine import (
+    COOKIE_DECRYPT_MESSAGE,
     DownloaderEngine,
     DownloadRunner,
     LineCb,
     RunResult,
     build_download_command,
     build_update_command,
+    chromium_cookie_hint_needed,
     domain_of,
+    map_ytdlp_error,
     parse_download_progress,
     parse_info_json,
     run_ytdlp_update,
@@ -144,6 +147,29 @@ def test_parse_info_json_fields() -> None:
 def test_domain_of_strips_www() -> None:
     assert domain_of("https://www.Example.com/x") == "example.com"
     assert domain_of("https://cdn.example.com/ep.mp3") == "cdn.example.com"
+
+
+# ── Cookies Chromium na Windows (App-Bound Encryption) ────────────────────────
+
+
+def test_map_ytdlp_error_cookie_patterns() -> None:
+    """DPAPI / „Could not copy" → podpowiedź o Firefoksie (nie surowy ERROR z linkiem)."""
+    dpapi = "ERROR: Failed to decrypt with DPAPI. See https://github.com/yt-dlp/yt-dlp/issues/10927"
+    copy = "ERROR: Could not copy Chrome cookie database. See .../issues/7271"
+    assert map_ytdlp_error(dpapi) == COOKIE_DECRYPT_MESSAGE
+    assert map_ytdlp_error(copy) == COOKIE_DECRYPT_MESSAGE
+    # Inny błąd zostaje surowy (nie podmieniamy każdego błędu na cookies).
+    assert "Private video" in map_ytdlp_error("ERROR: Private video, sign in")
+
+
+def test_chromium_cookie_hint_needed() -> None:
+    """Hint tylko dla przeglądarki Chromium NA Windows; Firefox i nie-Windows bez hintu."""
+    assert chromium_cookie_hint_needed("chrome", platform="win32") is True
+    assert chromium_cookie_hint_needed("edge", platform="win32") is True
+    assert chromium_cookie_hint_needed("opera", platform="win32") is True
+    assert chromium_cookie_hint_needed("firefox", platform="win32") is False  # Firefox działa
+    assert chromium_cookie_hint_needed("chrome", platform="linux") is False  # ABE tylko Windows
+    assert chromium_cookie_hint_needed("chrome", platform="darwin") is False
 
 
 # ── Silnik (atrapa runnera, bez sieci) ────────────────────────────────────────
