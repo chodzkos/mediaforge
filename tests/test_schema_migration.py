@@ -69,6 +69,39 @@ def test_cloud_ok_added_to_old_db_defaults_zero(tmp_path: Path) -> None:
     assert row[0] == 0  # stary wiersz jest wrażliwy (lokalnie), nie 1
 
 
+def _profile_columns(db: Path) -> set[str]:
+    conn = sqlite3.connect(db)
+    try:
+        return {row[1] for row in conn.execute("PRAGMA table_info(source_profiles)")}
+    finally:
+        conn.close()
+
+
+def test_old_source_profiles_gets_new_columns(tmp_path: Path) -> None:
+    """Stara tabela source_profiles (sprzed S5) dostaje organizer/cloud_ok; wiersz → cloud_ok=0."""
+    db = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(db)
+    # Kształt source_profiles sprzed S5 (bez organizer/cloud_ok).
+    conn.execute(
+        "CREATE TABLE source_profiles (id INTEGER PRIMARY KEY, domain TEXT NOT NULL UNIQUE, "
+        "category TEXT, tags TEXT)"
+    )
+    conn.execute("INSERT INTO source_profiles (domain, category) VALUES ('a.example.com', 'K')")
+    conn.commit()
+    conn.close()
+
+    ensure_schema(db)
+    assert {"organizer", "cloud_ok"} <= _profile_columns(db)
+    conn = sqlite3.connect(db)
+    try:
+        row = conn.execute(
+            "SELECT cloud_ok FROM source_profiles WHERE domain = 'a.example.com'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == 0  # stary profil jest lokalny (fail-safe), nie 1
+
+
 def test_fresh_db_ensure_schema_is_noop(tmp_path: Path) -> None:
     """Świeża baza (pełny schemat) → ponowne ensure_schema nic nie dodaje (brak ALTER)."""
     db = tmp_path / "fresh.sqlite3"

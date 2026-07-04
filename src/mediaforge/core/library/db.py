@@ -54,8 +54,26 @@ _RECORDINGS_COLUMNS: dict[str, str] = {
     "legal_note": "TEXT",
 }
 
+# Profile źródeł (per domena) — ewoluują addytywnie jak recordings (własny dict kolumn +
+# wpis w _ensure_columns). S5 dołożył ``organizer`` i ``cloud_ok`` (stały default → ALTER
+# ADD COLUMN dorabia je starej bazie; stary profil dostaje cloud_ok=0, zgodnie z fail-safe).
+_SOURCE_PROFILES_COLUMNS: dict[str, str] = {
+    "id": "INTEGER PRIMARY KEY",
+    "domain": "TEXT NOT NULL UNIQUE",
+    "engine": "TEXT",
+    "auth_method": "TEXT",
+    "quality_preset": "TEXT",
+    "category": "TEXT",
+    "tags": "TEXT",
+    "naming_template": "TEXT",
+    "note_mode": "TEXT",
+    "language": "TEXT",
+    "organizer": "TEXT",
+    "cloud_ok": "INTEGER NOT NULL DEFAULT 0",
+}
+
 # Pozostałe tabele (na razie addytywnie nie ewoluują — gdy zaczną, mają własne dicty kolumn
-# i wpis w _ensure_columns, analogicznie do recordings).
+# i wpis w _ensure_columns, analogicznie do recordings/source_profiles).
 _OTHER_SCHEMA: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS jobs (
@@ -100,20 +118,6 @@ _OTHER_SCHEMA: tuple[str, ...] = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag)",
-    """
-    CREATE TABLE IF NOT EXISTS source_profiles (
-        id              INTEGER PRIMARY KEY,
-        domain          TEXT NOT NULL UNIQUE,
-        engine          TEXT,
-        auth_method     TEXT,
-        quality_preset  TEXT,
-        category        TEXT,
-        tags            TEXT,
-        naming_template TEXT,
-        note_mode       TEXT,
-        language        TEXT
-    )
-    """,
 )
 
 
@@ -181,13 +185,18 @@ def ensure_schema(path: Path) -> None:
     po ``user_version``). Sam diff kolumn pokrywa wszystkie przypadki addytywne.
     """
     columns = _columns_sql(_RECORDINGS_COLUMNS)
+    profiles_columns = _columns_sql(_SOURCE_PROFILES_COLUMNS)
     conn = connect(path)
     try:
         with _transaction(conn):
             conn.execute(f"CREATE TABLE IF NOT EXISTS recordings (\n    {columns}\n)")
+            conn.execute(
+                f"CREATE TABLE IF NOT EXISTS source_profiles (\n    {profiles_columns}\n)"
+            )
             for statement in _OTHER_SCHEMA:
                 conn.execute(statement)
             _ensure_columns(conn, "recordings", _RECORDINGS_COLUMNS)
+            _ensure_columns(conn, "source_profiles", _SOURCE_PROFILES_COLUMNS)
             # PRAGMA nie przyjmuje parametrów — wersja jest int z zakresu kodu.
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     finally:
