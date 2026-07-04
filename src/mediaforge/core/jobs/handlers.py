@@ -131,7 +131,11 @@ def make_summarize_handler(
         text = read_transcript_text(folder / meta.transcript_json)
         summary = client.summarize(text, route)  # GatewayError → job.error z base_url
         summary_path = folder / "summary.md"
-        summary_path.write_text(summary, encoding="utf-8")
+        # BOM (utf-8-sig) WYŁĄCZNIE dla plików czytanych przez człowieka w zewnętrznych
+        # aplikacjach: summary.md otwiera się w Calibre/czytnikach windowsowych, które bez BOM
+        # zgadują cp1250 → krzaki w polskich znakach. NIE dodawaj BOM do transcript.json /
+        # metadata.json (łamie parsery JSON, RFC 8259) ani .srt (pisze je whisper-cli).
+        summary_path.write_text(summary, encoding="utf-8-sig")
 
         updated = replace(meta, summary_status="done", summary_path=summary_path.name)
         write_metadata(folder, updated)  # metadata.json = źródło prawdy

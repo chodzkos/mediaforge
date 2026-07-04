@@ -251,7 +251,11 @@ def test_summarize_job_local_happy_path(tmp_path: Path) -> None:
     # Model lokalny mimo skonfigurowanej chmury (cloud_ok=False → fail-safe).
     assert captured["payload"]["model"] == _LOCAL  # type: ignore[index]
     # summary.md w folderze materiału (źródło prawdy) + statusy.
-    assert (folder / "summary.md").read_text(encoding="utf-8").startswith("# Streszczenie")
+    # BOM (utf-8-sig) TYLKO dla summary.md — czytniki windowsowe bez BOM zgadują cp1250.
+    assert (folder / "summary.md").read_bytes().startswith(b"\xef\xbb\xbf")
+    assert (folder / "summary.md").read_text(encoding="utf-8-sig").startswith("# Streszczenie")
+    # metadata.json BEZ BOM — json.loads dalej przechodzi (BOM łamałby parser, RFC 8259).
+    assert json.loads((folder / "metadata.json").read_text(encoding="utf-8"))["summary_status"]
     meta = read_metadata(folder)
     assert meta.summary_status == "done" and meta.summary_path == "summary.md"
     material = store.get_material(rec_id)

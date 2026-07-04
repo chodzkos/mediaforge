@@ -50,12 +50,12 @@ def test_library_lists_and_edits_persist(
 
     assert widget._list.count() == 1
     widget._list.setCurrentRow(0)
-    assert widget._title.text() == "Wykład"
+    assert widget._details.title.text() == "Wykład"
 
     # Edycja metadanych → zapis do metadata.json (źródło prawdy) + SQLite.
-    widget._title.setText("Wykład o BGP")
-    widget._presenter.setText("dr Nowak")
-    widget._tags.setText("tcp, bgp")
+    widget._details.title.setText("Wykład o BGP")
+    widget._details.presenter.setText("dr Nowak")
+    widget._details.tags.setText("tcp, bgp")
     widget._on_save()
 
     saved = read_metadata(folder)
