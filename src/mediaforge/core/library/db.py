@@ -190,9 +190,7 @@ def ensure_schema(path: Path) -> None:
     try:
         with _transaction(conn):
             conn.execute(f"CREATE TABLE IF NOT EXISTS recordings (\n    {columns}\n)")
-            conn.execute(
-                f"CREATE TABLE IF NOT EXISTS source_profiles (\n    {profiles_columns}\n)"
-            )
+            conn.execute(f"CREATE TABLE IF NOT EXISTS source_profiles (\n    {profiles_columns}\n)")
             for statement in _OTHER_SCHEMA:
                 conn.execute(statement)
             _ensure_columns(conn, "recordings", _RECORDINGS_COLUMNS)

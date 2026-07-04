@@ -111,8 +111,7 @@ def ytdlp_update_plan(*, available: bool, path: str | None) -> tuple[list[str] |
         return build_update_command(str(path)), f"Aktualizuję yt-dlp ({path})…"
     return (
         None,
-        "yt-dlp działa jako moduł pythonowy — zaktualizuj pakiet: "
-        "uv sync --upgrade-package yt-dlp",
+        "yt-dlp działa jako moduł pythonowy — zaktualizuj pakiet: uv sync --upgrade-package yt-dlp",
     )
 
 
