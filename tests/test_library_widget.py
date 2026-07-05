@@ -104,6 +104,38 @@ def test_transcribe_button_enqueues_job(
     assert jobs[0].recording_id is not None
 
 
+def test_attach_slides_button_copies_and_shows_gallery(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """„Podłącz slajdy" kopiuje obrazy do slides/, licznik w Info i galeria z timestampem."""
+    db = _isolate(monkeypatch, tmp_path)
+    folder = _seed(db, tmp_path, "Wyklad", category="Sieci", tags=["tcp"])
+    src = tmp_path / "src"
+    src.mkdir()
+    for name in ("s_0s.png", "s_154s.png", "notatki.txt"):
+        (src / name).write_bytes(b"X")
+
+    widget = LibraryWidget()
+    qtbot.addWidget(widget)
+    widget._list.setCurrentRow(0)
+    # Podmieniamy natywny dialog wyboru plików (pytest-qt go nie kliknie).
+    monkeypatch.setattr(
+        widget,
+        "_pick_slide_sources",
+        lambda: [src / "s_0s.png", src / "s_154s.png", src / "notatki.txt"],
+    )
+    widget._on_attach_slides()
+
+    copied = sorted(p.name for p in (folder / "slides").iterdir())
+    assert copied == ["s_0s.png", "s_154s.png"]  # nie-obraz pominięty
+    assert read_metadata(folder).slides[1].timestamp_s == 154
+    # Panel: licznik slajdów w Info + galeria z podpisem timestampu (2:34).
+    assert "Slajdy: 2" in widget._details._info.text()
+    assert widget._details._slides_gallery.count() == 2
+    labels = {widget._details._slides_gallery.item(i).text() for i in range(2)}
+    assert "2:34" in labels  # 154 s → 2:34 (widoczny sygnał mapy czasowej)
+
+
 def test_import_dialog_constructs(
     qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

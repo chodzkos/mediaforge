@@ -44,6 +44,20 @@ których użytkownik MA wykupiony/przyznany dostęp (kursy, webinary członkowsk
 Nie rozmywaj tej granicy w przyszłych sesjach: żaden „wygodny" tryb logowania hasłem, żaden
 headless-scraping omijający 2FA (patrz pkt 2). Cookies-from-browser to jedyny tor zalogowany.
 
+### Slajdy (mp.pl i podobne) — automatyczne pobieranie ŚWIADOMIE poza zakresem
+
+Automatyczne pobieranie slajdów z mp.pl jest **odrzucone świadomie, nie przeoczone.** Origin
+(`adst.mp.pl`) bramkuje slajdy pełną zalogowaną sesją (`PHPSESSID`) **oraz** tokenem
+Cloudflare `cf_clearance` (challenge anty-bot), a manifest slajdów też wymaga logowania.
+Niesienie `cf_clearance` w automacie = **obchodzenie zabezpieczenia odróżniającego człowieka
+od bota** = po niewłaściwej stronie twardej granicy (pkt 2, oraz S5: „zero obchodzenia
+zabezpieczeń dostępu") — NIEZALEŻNIE od tego, że użytkownik ma legalny dostęp do treści.
+
+Rozwiązanie (feat/attach-slides): użytkownik **zapisuje slajdy z własnej przeglądarki** (jego
+ekran, jego sesja — żadnego obejścia), a mediaforge je tylko **PODŁĄCZA** (kopia do `slides/`,
+mapa slajd↔czas z nazwy pliku). Jeśli przyszła sesja rozważa „automat na slajdy mp.pl" —
+to jest ta sama granica co logowanie hasłem/headless: nie wracaj do niej.
+
 ## Pułapki techniczne (sprzęt: RTX 5090 mobile, 24 GB VRAM, Blackwell sm_120, 128 GB RAM, Windows)
 
 - **24 GB to VRAM, nie 128 GB RAM.** O lokalnym LLM/Whisper/VLM decyduje VRAM. Nie zakładaj, że duży RAM pozwala na pełny long-context lokalnie — długi kontekst rośnie przez KV-cache w VRAM. Realny lokalny kontekst ~30–40k tokenów na ~24B; dłuższe → chmura przez LiteLLM.

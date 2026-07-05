@@ -44,7 +44,20 @@ def about_tabs() -> list[tuple[str, str]]:
             "utworzoną samodzielnie przez użytkownika."
         ),
     )
-    return [("O programie", about), ("Granice prawne", legal)]
+    slides = section(
+        "Jak dodać slajdy",
+        paragraph(
+            "Slajdy zapisujesz z <b>własnej przeglądarki</b> (Twój ekran, Twoja sesja): "
+            "rozszerzenie typu <i>Image Downloader</i> ściąga wszystkie obrazy z karty jednym "
+            "kliknięciem, albo ręcznie prawy przycisk → „Zapisz obraz”. Potem w bibliotece, "
+            "przy materiale, użyj <b>„Podłącz slajdy”</b> i wskaż zapisane pliki (lub folder)."
+        )
+        + paragraph(
+            "Jeśli nazwy plików niosą czas (np. z mp.pl: <code>..._450s.png</code>), mediaforge "
+            "automatycznie zmapuje slajdy do momentów nagrania — miniatura pokaże znacznik czasu."
+        ),
+    )
+    return [("O programie", about), ("Granice prawne", legal), ("Slajdy", slides)]
 
 
 def open_about(parent: QWidget | None = None) -> None:

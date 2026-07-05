@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -218,6 +219,7 @@ class LibraryWidget(QWidget):
         self._details.save_btn.clicked.connect(self._on_save)
         self._details.transcribe_btn.clicked.connect(self._on_transcribe)
         self._details.summarize_btn.clicked.connect(self._on_summarize)
+        self._details.attach_slides_btn.clicked.connect(self._on_attach_slides)
         self._details.open_btn.clicked.connect(self._open_folder)
         self._details.delete_btn.clicked.connect(self._on_delete)
         return self._details
@@ -292,6 +294,39 @@ class LibraryWidget(QWidget):
         write_metadata(folder, updated)  # metadata.json = źródło prawdy
         self._store.upsert_material(folder, updated)  # synchronizacja indeksu
         self.refresh_all()
+
+    def _on_attach_slides(self) -> None:
+        """Wybór obrazów slajdów (pliki albo cały folder) → kopia do slides/ materiału.
+
+        Kopiowanie/przeliczenie robi ``store.add_slides`` (nie-obrazy pomija). GUI tylko wybiera
+        źródło i odświeża panel; slajdy z nazwą niosącą czas (np. mp.pl ``_450s``) mapują się same.
+        """
+        if self._current is None:
+            return
+        _rec_id, folder, meta = self._current
+        files = self._pick_slide_sources()
+        if not files:
+            return
+        try:
+            self._store.add_slides(folder, meta, files)
+        except OSError as exc:
+            self._log.append_line(f"Nie podłączono slajdów: {exc}", "error")
+            return
+        self._log.append_line(f"Podłączono slajdy: {meta.title}", "done")
+        self.refresh_all()
+
+    def _pick_slide_sources(self) -> list[Path]:
+        """Dialog wyboru obrazów: pliki, a gdy nic nie wybrano — cały folder (wszystkie obrazy).
+
+        Seam do testów (pytest-qt nie klika natywnego dialogu) — podmieniany w testach.
+        """
+        picked, _filter = QFileDialog.getOpenFileNames(
+            self, "Wybierz obrazy slajdów", "", "Obrazy (*.png *.jpg *.jpeg *.webp *.gif)"
+        )
+        if picked:
+            return [Path(p) for p in picked]
+        directory = QFileDialog.getExistingDirectory(self, "Albo wskaż folder ze slajdami")
+        return sorted(Path(directory).iterdir()) if directory else []
 
     def _open_folder(self) -> None:
         if self._current is not None:

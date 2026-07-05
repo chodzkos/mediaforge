@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from mediaforge.core.library.slides import Slide, slide_from_dict, slide_to_dict
+
 METADATA_FILENAME = "metadata.json"
 
 
@@ -44,11 +46,16 @@ class MaterialMetadata:
     # TWARDA GRANICA prywatności (fail-safe): materiał jest wrażliwy, DOPÓKI użytkownik jawnie
     # nie ustawi cloud_ok=True. Brak pola w metadata.json = False (zapomnienie = bezpieczne).
     cloud_ok: bool = False
+    # Slajdy podłączone z folderu ``slides/`` (mapa slajd↔czas pod S6). Źródło prawdy = dysk;
+    # tu tylko indeks. Kolejność wg ``index`` (nie sortujemy — collect_slides już ponumerował).
+    slides: tuple[Slide, ...] = ()
     status: str = "recorded"
 
     def __post_init__(self) -> None:
         # Tagi kanonicznie: bez pustych, bez duplikatów, posortowane — stabilny round-trip.
         self.tags = sorted({t.strip() for t in self.tags if t.strip()})
+        # Slajdy z listy → krotka (niemutowalna, porównywalna w round-tripie).
+        self.slides = tuple(self.slides)
 
     def to_dict(self) -> dict[str, Any]:
         """Słownik do serializacji JSON (tagi posortowane dla stabilnego pliku)."""
@@ -71,6 +78,7 @@ class MaterialMetadata:
             "summary_status": self.summary_status,
             "summary_path": self.summary_path,
             "cloud_ok": self.cloud_ok,
+            "slides": [slide_to_dict(s) for s in self.slides],
             "status": self.status,
         }
 
@@ -99,6 +107,9 @@ class MaterialMetadata:
             summary_path=_opt_str(data.get("summary_path")),
             # Brak pola = False: zapomnienie zgody jest bezpieczne (materiał zostaje lokalnie).
             cloud_ok=bool(data.get("cloud_ok", False)),
+            slides=tuple(
+                slide_from_dict(s) for s in (data.get("slides") or []) if isinstance(s, dict)
+            ),
             status=str(data.get("status", "recorded")),
         )
 

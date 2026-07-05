@@ -9,15 +9,28 @@ a :meth:`RecordingStore.to_metadata` czyta je z powrotem (round-trip folder ↔ 
 
 from __future__ import annotations
 
+import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from sqlite3 import Connection, Row
 
 from mediaforge.core.library.db import connect, ensure_schema
-from mediaforge.core.library.material import MaterialMetadata, metadata_path, read_metadata
+from mediaforge.core.library.material import (
+    MaterialMetadata,
+    metadata_path,
+    read_metadata,
+    write_metadata,
+)
+from mediaforge.core.library.slides import (
+    Slide,
+    attach_slides,
+    read_slides,
+    slide_from_dict,
+    slide_to_dict,
+)
 
 
 class RecordingStatus(StrEnum):
@@ -107,8 +120,20 @@ def _row_to_metadata(row: Row, tags: list[str]) -> MaterialMetadata:
         summary_status=str(row["summary_status"]),
         summary_path=row["summary_path"],
         cloud_ok=bool(row["cloud_ok"]),  # INTEGER 0/1 → bool (fail-safe: brak/0 = lokalnie)
+        slides=_slides_from_json(row["slides_json"]),
         status=str(row["status"]),
     )
+
+
+def _slides_from_json(raw: str | None) -> tuple[Slide, ...]:
+    """Deserializuje kolumnę ``slides_json`` (indeks nad ``slides/``) do krotki :class:`Slide`."""
+    if not raw:
+        return ()
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return ()
+    return tuple(slide_from_dict(s) for s in data if isinstance(s, dict))
 
 
 class RecordingStore:
@@ -265,6 +290,7 @@ class RecordingStore:
                 meta.summary_status,
                 meta.summary_path,
                 int(meta.cloud_ok),  # bool → INTEGER 0/1
+                json.dumps([slide_to_dict(s) for s in meta.slides]),
                 meta.status,
             )
             if existing is not None:
@@ -273,8 +299,8 @@ class RecordingStore:
                     "UPDATE recordings SET title=?, source_type=?, source_url=?, presenter=?, "
                     "organizer=?, category=?, created_at=?, duration=?, folder=?, video_path=?, "
                     "audio_path=?, thumbnail_path=?, transcript_status=?, transcript_json=?, "
-                    "transcript_srt=?, summary_status=?, summary_path=?, cloud_ok=?, status=? "
-                    "WHERE id=?",
+                    "transcript_srt=?, summary_status=?, summary_path=?, cloud_ok=?, "
+                    "slides_json=?, status=? WHERE id=?",
                     (*values, rec_id),
                 )
             else:
@@ -282,8 +308,8 @@ class RecordingStore:
                     "INSERT INTO recordings (title, source_type, source_url, presenter, organizer, "
                     "category, created_at, duration, folder, video_path, audio_path, "
                     "thumbnail_path, transcript_status, transcript_json, transcript_srt, "
-                    "summary_status, summary_path, cloud_ok, status) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "summary_status, summary_path, cloud_ok, slides_json, status) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     values,
                 )
                 rec_id = int(cur.lastrowid or 0)
@@ -292,6 +318,20 @@ class RecordingStore:
             return rec_id
         finally:
             conn.close()
+
+    def add_slides(
+        self, folder: Path, meta: MaterialMetadata, sources: list[Path]
+    ) -> MaterialMetadata:
+        """Podłącza slajdy: kopia obrazów do ``slides/`` → metadata.json (źródło prawdy) + indeks.
+
+        Kopiuje tylko obrazy (nie-obrazy pomija), przelicza kolejność/timestampy
+        (:func:`~mediaforge.core.library.slides.collect_slides`) i zwraca zaktualizowane metadane.
+        """
+        collected = attach_slides(folder, sources)
+        updated = replace(meta, slides=tuple(collected))
+        write_metadata(folder, updated)
+        self.upsert_material(folder, updated)
+        return updated
 
     def to_metadata(self, recording_id: int) -> MaterialMetadata | None:
         """Czyta wiersz materiału z SQLite z powrotem do :class:`MaterialMetadata`."""
@@ -401,6 +441,12 @@ class RecordingStore:
                 meta = read_metadata(child)
             except (OSError, ValueError):
                 continue  # uszkodzony metadata.json — pomiń, nie wywalaj całego skanu
+            # Slajdy odtwarzamy z folderu ``slides/`` (źródło prawdy = dysk) — dołożony ręcznie
+            # plik jest podłapywany; przy zmianie zapisujemy metadata.json (jak transkrypt).
+            disk_slides = tuple(read_slides(child))
+            if disk_slides != meta.slides:
+                meta = replace(meta, slides=disk_slides)
+                write_metadata(child, meta)
             self.upsert_material(child, meta)
             count += 1
         suspicious_empty = count == 0 and self._material_count() > 0
