@@ -51,6 +51,7 @@ _SUMMARY_MODEL_CLOUD_KEY = "summary_model_cloud"  # model chmurowy (None = brak 
 _SUMMARY_LANGUAGE_KEY = "summary_language"  # język streszczenia (domyślnie pl)
 _SUMMARY_MAX_TOKENS_KEY = "summary_max_tokens"  # limit tokenów odpowiedzi streszczenia
 _SUMMARY_TIMEOUT_KEY = "summary_timeout_sec"  # timeout żądania do gatewaya (domyślnie 120 s)
+_SUMMARY_PROMPT_SUFFIX_KEY = "summary_prompt_suffix"  # sufiks system-promptu (qwen3: /no_think)
 
 
 def load(on_dirty: Callable[[], None] | None = None) -> Config:
@@ -204,9 +205,23 @@ def get_summary_language(cfg: Config) -> str:
 
 
 def get_summary_max_tokens(cfg: Config) -> int:
-    """Limit tokenów odpowiedzi streszczenia (domyślnie 1024)."""
+    """Limit tokenów odpowiedzi streszczenia (domyślnie 4096).
+
+    4096, bo modele rozumujące (qwen3) część budżetu zjadają na wewnętrzne rozumowanie zanim
+    zaczną treść — za mały limit kończył się pustym streszczeniem.
+    """
     value = cfg.get(_SUMMARY_MAX_TOKENS_KEY)
-    return value if isinstance(value, int) and value > 0 else 1024
+    return value if isinstance(value, int) and value > 0 else 4096
+
+
+def get_summary_prompt_suffix(cfg: Config) -> str:
+    """Sufiks system-promptu streszczenia (domyślnie ``/no_think`` — soft-switch qwen3).
+
+    Konfigurowalny, by przy zmianie modelu dało się wyczyścić (``""``) bez zmiany kodu.
+    Pusty łańcuch jest respektowany (jawne wyłączenie); brak klucza = domyślny ``/no_think``.
+    """
+    value = cfg.get(_SUMMARY_PROMPT_SUFFIX_KEY)
+    return value if isinstance(value, str) else "/no_think"
 
 
 def get_summary_timeout(cfg: Config) -> float:

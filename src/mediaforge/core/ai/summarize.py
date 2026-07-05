@@ -50,9 +50,14 @@ class SummaryConfig:
 
     base_url: str
     language: str = "pl"
-    max_tokens: int = 1024
+    # 4096: modele rozumujące (qwen3) zjadają część budżetu na wewnętrzne rozumowanie zanim
+    # zaczną treść — za mały limit kończy się pustym content (patrz parse_summary_response).
+    max_tokens: int = 4096
     timeout: float = 120.0  # lokalny model na dużym transkrypcie bywa wolny
     api_key: str | None = None
+    # Sufiks system-promptu — dla qwen3 „/no_think" (soft-switch wyłączający tryb rozumowania,
+    # żeby całość budżetu szła w treść). Konfigurowalny: przy zmianie modelu można wyczyścić ("").
+    prompt_suffix: str = "/no_think"
 
 
 def _endpoint(base_url: str) -> str:
@@ -60,35 +65,46 @@ def _endpoint(base_url: str) -> str:
     return f"{base_url.rstrip('/')}{_CHAT_PATH}"
 
 
-def _system_prompt(language: str) -> str:
-    """Instrukcja systemowa: rzeczowe streszczenie w zadanym języku, w Markdown."""
-    return (
+def _system_prompt(language: str, suffix: str = "") -> str:
+    """Instrukcja systemowa: rzeczowe streszczenie w zadanym języku, w Markdown.
+
+    ``suffix`` (np. ``/no_think`` dla qwen3) doklejamy na końcu — soft-switch wyłączający
+    tryb rozumowania modelu. Pusty ``suffix`` = brak dopisku (przy modelu nierozumującym).
+    """
+    base = (
         f"Jesteś asystentem, który tworzy zwięzłe, rzeczowe streszczenia w języku {language}. "
         "Zachowaj najważniejsze tezy, definicje i wnioski. Zwróć wynik w formacie Markdown."
     )
+    return f"{base} {suffix}" if suffix else base
 
 
 def build_summary_request(text: str, route: ModelRoute, config: SummaryConfig) -> dict[str, Any]:
     """Składa payload chat-completions: model z ``route``, transkrypt jako wiadomość usera.
 
     Kształt zgodny z OpenAI/LiteLLM: ``model`` bierze się z trasy (lokalna/chmurowa),
-    system-prompt niesie język streszczenia, ``max_tokens`` z configu.
+    system-prompt niesie język streszczenia + ``config.prompt_suffix``, ``max_tokens`` z configu.
     """
     return {
         "model": route.model,
         "messages": [
-            {"role": "system", "content": _system_prompt(config.language)},
+            {"role": "system", "content": _system_prompt(config.language, config.prompt_suffix)},
             {"role": "user", "content": text},
         ],
         "max_tokens": config.max_tokens,
     }
 
 
-def parse_summary_response(data: Any) -> str:
+def parse_summary_response(data: Any, *, max_tokens: int | None = None) -> str:
     """Wyciąga treść streszczenia z odpowiedzi gatewaya albo rzuca :class:`GatewayError`.
 
     Obsługiwane przypadki błędne: odpowiedź z polem ``error`` (gateway zgłosił problem),
     śmieci/niepoprawny kształt (brak ``choices``/``message``) oraz pusta treść.
+
+    Diagnostyka pustej treści (potrzebuje pełnej odpowiedzi, nie tylko ``choices``): gdy
+    ``content`` jest pusty ORAZ ``usage.completion_tokens >= max_tokens`` (budżet wyczerpany),
+    rzucamy komunikat o modelu rozumującym (qwen3 zjadł limit na rozumowanie zanim zaczął
+    treść — reasoning_content, nie content). **Nie** opieramy się na ``finish_reason``: przy
+    tym ucięciu raportuje ``stop`` mimo osiągnięcia limitu (zmierzone na żywo).
     """
     if not isinstance(data, Mapping):
         raise GatewayError(f"Gateway zwrócił nieoczekiwany kształt: {type(data).__name__}")
@@ -100,8 +116,23 @@ def parse_summary_response(data: Any) -> str:
     message = choices[0].get("message") if isinstance(choices[0], Mapping) else None
     content = message.get("content") if isinstance(message, Mapping) else None
     if not isinstance(content, str) or not content.strip():
+        if max_tokens is not None and _budget_exhausted(data, max_tokens):
+            raise GatewayError(
+                f"Model zużył cały limit tokenów ({max_tokens}) na rozumowanie zanim zaczął "
+                "streszczenie — zwiększ summary_max_tokens albo zostaw summary_prompt_suffix"
+                "=/no_think."
+            )
         raise GatewayError("Gateway zwrócił pustą treść streszczenia.")
     return content.strip()
+
+
+def _budget_exhausted(data: Mapping[str, Any], max_tokens: int) -> bool:
+    """Czy ``usage.completion_tokens`` osiągnął/przekroczył budżet (limit tokenów wyczerpany)."""
+    usage = data.get("usage")
+    if not isinstance(usage, Mapping):
+        return False
+    completion = usage.get("completion_tokens")
+    return isinstance(completion, int) and completion >= max_tokens
 
 
 def read_transcript_text(transcript_json: Path) -> str:
@@ -155,4 +186,4 @@ class SummaryClient:
             raise GatewayError(
                 f"Gateway zwrócił niepoprawny JSON ({self.config.base_url}): {exc}"
             ) from exc
-        return parse_summary_response(data)
+        return parse_summary_response(data, max_tokens=self.config.max_tokens)
