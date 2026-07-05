@@ -26,14 +26,17 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -43,6 +46,9 @@ from PySide6.QtWidgets import (
 )
 
 from mediaforge.core.library.material import MaterialMetadata
+from mediaforge.core.library.slides import SLIDES_DIRNAME
+
+_SLIDE_ROLE = int(Qt.ItemDataRole.UserRole)
 
 
 def _fmt_duration(seconds: float | None) -> str:
@@ -50,6 +56,13 @@ def _fmt_duration(seconds: float | None) -> str:
         return "—"
     total = int(seconds)
     return f"{total // 3600:02d}:{total % 3600 // 60:02d}:{total % 60:02d}"
+
+
+def _fmt_timestamp(seconds: int) -> str:
+    """Sekunda → ``m:ss`` (albo ``h:mm:ss``) — etykieta timestampu przy miniaturze slajdu."""
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
 class MaterialDetailsPanel(QScrollArea):
@@ -113,6 +126,12 @@ class MaterialDetailsPanel(QScrollArea):
         self.summarize_btn = QPushButton("Streść")
         self.summarize_btn.setToolTip("Streść transkrypt przez gateway (aktywne po transkrypcji)")
         actions.addWidget(self.summarize_btn)
+        self.attach_slides_btn = QPushButton("Podłącz slajdy")
+        self.attach_slides_btn.setToolTip(
+            "Skopiuj obrazy slajdów (z przeglądarki: prawy→zapisz albo rozszerzenie Image "
+            "Downloader) do folderu materiału. Nazwy z czasem (mp.pl _450s) mapują się na moment"
+        )
+        actions.addWidget(self.attach_slides_btn)
         self.open_btn = QPushButton("Otwórz folder")
         actions.addWidget(self.open_btn)
         actions.addStretch(1)
@@ -121,7 +140,7 @@ class MaterialDetailsPanel(QScrollArea):
         actions.addWidget(self.delete_btn)
         col.addLayout(actions)
 
-        # ── ROZCIĄGLIWA (jedyna): podgląd streszczenia (Markdown, własny scroll) ──
+        # ── ROZCIĄGLIWA: podgląd streszczenia (Markdown, własny scroll) ──────────
         col.addWidget(QLabel("Streszczenie:"))
         self._summary_view = QTextBrowser()
         self._summary_view.setOpenExternalLinks(True)
@@ -129,12 +148,32 @@ class MaterialDetailsPanel(QScrollArea):
         self._summary_view.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         col.addWidget(self._summary_view, stretch=1)
 
+        # ── ROZCIĄGLIWA: galeria slajdów (IconMode, własny scroll wewnętrzny) ────
+        # Kolejna sekcja rozciągliwa PO fixie layoutu z fix/s4-polish — panel jest w QScrollArea,
+        # więc długie Info + streszczenie + galeria naraz przy wąskim oknie nie nachodzą (scroll).
+        col.addWidget(QLabel("Slajdy:"))
+        self._slides_gallery = QListWidget()
+        self._slides_gallery.setViewMode(QListWidget.ViewMode.IconMode)
+        self._slides_gallery.setIconSize(QSize(160, 120))
+        self._slides_gallery.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self._slides_gallery.setMovement(QListWidget.Movement.Static)
+        self._slides_gallery.setSpacing(6)
+        self._slides_gallery.setMinimumHeight(140)
+        self._slides_gallery.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+        )
+        self._slides_gallery.itemActivated.connect(self._open_slide)
+        self._slides_gallery.itemClicked.connect(self._open_slide)
+        col.addWidget(self._slides_gallery, stretch=1)
+
+        self._folder: Path | None = None
         self.set_editing_enabled(False)
 
     # ── API dla właściciela ───────────────────────────────────────────────────
 
     def load(self, folder: Path, meta: MaterialMetadata) -> None:
-        """Wypełnia panel danymi materiału (pola, Info, miniatura, podgląd streszczenia)."""
+        """Wypełnia panel danymi materiału (pola, Info, miniatura, streszczenie, galeria)."""
+        self._folder = folder
         self.title.setText(meta.title)
         self.presenter.setText(meta.presenter or "")
         self.organizer.setText(meta.organizer or "")
@@ -144,22 +183,25 @@ class MaterialDetailsPanel(QScrollArea):
         self._info.setText(
             f"Data: {meta.created_at[:19] or '—'}  ·  Długość: {_fmt_duration(meta.duration)}  ·  "
             f"Źródło: {meta.source_type}  ·  Transkrypcja: {meta.transcript_status}  ·  "
-            f"Streszczenie: {meta.summary_status}"
+            f"Streszczenie: {meta.summary_status}  ·  Slajdy: {len(meta.slides)}"
         )
         self.set_editing_enabled(True)
         # „Streść" tylko po transkrypcji (handler i tak odmówi bez transkryptu — to UX).
         self.summarize_btn.setEnabled(meta.transcript_status == "done")
         self._show_thumbnail(folder, meta)
         self._show_summary(folder, meta)
+        self._show_slides(folder, meta)
 
     def clear(self) -> None:
         """Czyści pola i podgląd, wyłącza edycję (brak zaznaczonego materiału)."""
+        self._folder = None
         for edit in (self.title, self.presenter, self.organizer, self.category, self.tags):
             edit.clear()
         self.cloud_ok.setChecked(False)
         self._info.clear()
         self._thumb.setText("(brak podglądu)")
         self._summary_view.clear()
+        self._slides_gallery.clear()
         self.set_editing_enabled(False)
 
     def set_editing_enabled(self, enabled: bool) -> None:
@@ -174,6 +216,7 @@ class MaterialDetailsPanel(QScrollArea):
             self.save_btn,
             self.transcribe_btn,
             self.summarize_btn,
+            self.attach_slides_btn,
             self.open_btn,
             self.delete_btn,
         ):
@@ -218,3 +261,33 @@ class MaterialDetailsPanel(QScrollArea):
             except OSError:
                 pass
         self._summary_view.clear()
+
+    def _show_slides(self, folder: Path, meta: MaterialMetadata) -> None:
+        """Renderuje galerię miniatur z ``slides/``; timestamp (m:ss) jako podpis, gdy jest."""
+        self._slides_gallery.clear()
+        slides_dir = folder / SLIDES_DIRNAME
+        for slide in meta.slides:
+            path = slides_dir / slide.filename
+            label = _fmt_timestamp(slide.timestamp_s) if slide.timestamp_s is not None else ""
+            item = QListWidgetItem(label)
+            item.setToolTip(f"{slide.index}. {slide.filename}")
+            item.setData(_SLIDE_ROLE, str(path))
+            pixmap = QPixmap(str(path))
+            if not pixmap.isNull():
+                item.setIcon(QIcon(pixmap))
+            self._slides_gallery.addItem(item)
+
+    def _open_slide(self, item: QListWidgetItem) -> None:
+        """Powiększa klik­nięty slajd w osobnym oknie (pełny obraz, skalowany do ekranu)."""
+        path = str(item.data(_SLIDE_ROLE) or "")
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(item.toolTip() or "Slajd")
+        layout = QVBoxLayout(dialog)
+        label = QLabel()
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setPixmap(pixmap.scaledToWidth(900, Qt.TransformationMode.SmoothTransformation))
+        layout.addWidget(label)
+        dialog.exec()
