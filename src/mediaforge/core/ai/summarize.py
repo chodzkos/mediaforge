@@ -11,9 +11,10 @@ Podział odpowiedzialności (obie funkcje są czyste i testowalne bez sieci):
 * :func:`parse_summary_response` — wyciąga treść albo rzuca :class:`GatewayError`
   (błąd gatewaya / śmieci / pusta treść).
 
-Transport (:meth:`SummaryClient.summarize`) używa ``urllib.request`` ze stdlib; błąd
-HTTP/połączenia zamienia na :class:`GatewayError` z URL-em gatewaya — użytkownik ma wiedzieć,
-że zawiódł gateway, nie aplikacja.
+Transport (:meth:`SummaryClient.summarize`) używa ``urllib.request`` ze stdlib i rozdziela dwa
+powody błędu na osobne komunikaty :class:`GatewayError`: **timeout** (gateway wolno liczy długi
+materiał → „zwiększ summary_timeout") vs **błąd połączenia** (gatewaya nie ma → „niedostępny").
+Mylenie ich sugerowało padnięty gateway, gdy ten tylko ciężko liczył.
 """
 
 from __future__ import annotations
@@ -53,7 +54,9 @@ class SummaryConfig:
     # 4096: modele rozumujące (qwen3) zjadają część budżetu na wewnętrzne rozumowanie zanim
     # zaczną treść — za mały limit kończy się pustym content (patrz parse_summary_response).
     max_tokens: int = 4096
-    timeout: float = 120.0  # lokalny model na dużym transkrypcie bywa wolny
+    # 600 s: 2-godzinny transkrypt to kilkuminutowy prefill+generacja na lokalnym 27b — krótszy
+    # timeout padał w połowie pracy (patrz podział błędów transportu w summarize).
+    timeout: float = 600.0
     api_key: str | None = None
     # Sufiks system-promptu — dla qwen3 „/no_think" (soft-switch wyłączający tryb rozumowania,
     # żeby całość budżetu szła w treść). Konfigurowalny: przy zmianie modelu można wyczyścić ("").
@@ -146,6 +149,30 @@ def read_transcript_text(transcript_json: Path) -> str:
     return parse_whisper_json(data).text
 
 
+def _is_timeout(exc: BaseException) -> bool:
+    """Czy błąd transportu to timeout (a nie zerwane/odrzucone połączenie).
+
+    ``socket.timeout`` jest aliasem ``TimeoutError`` (3.11+), więc timeout wystawia się albo
+    bezpośrednio, albo opakowany w ``urllib.error.URLError`` (wtedy w ``reason``). Rozpoznajemy
+    oba, by oddzielić „gateway wolno liczy" od „gatewaya nie ma" (connection refused).
+    """
+    if isinstance(exc, TimeoutError):
+        return True
+    return isinstance(getattr(exc, "reason", None), TimeoutError)
+
+
+def summary_start_line(char_count: int, model: str, timeout: float) -> str:
+    """Linia diagnostyczna startu streszczenia (do LogView): rozmiar wejścia, model, timeout.
+
+    Rozmiar w tysiącach znaków (``~N tys.``) — następna diagnoza długiego materiału ma liczby
+    od ręki, bez ręcznego liczenia transkryptu.
+    """
+    return (
+        f"Streszczanie: ~{char_count // 1000} tys. znaków transkryptu, "
+        f"model {model}, timeout {int(timeout)} s"
+    )
+
+
 def _default_transport(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> bytes:
     """Domyślny transport POST przez ``urllib.request`` (stdlib, bez zewnętrznych SDK)."""
     request = urllib.request.Request(url, data=body, headers=dict(headers), method="POST")
@@ -168,10 +195,13 @@ class SummaryClient:
         return headers
 
     def summarize(self, text: str, route: ModelRoute) -> str:
-        """POST do gatewaya i zwrot treści; błąd HTTP/połączenia → :class:`GatewayError` z URL-em.
+        """POST do gatewaya i zwrot treści; błąd transportu → :class:`GatewayError` (dwa powody).
 
-        Komunikat błędu NAZYWA gateway (``Gateway niedostępny (http://…): …``), żeby użytkownik
-        wiedział, że zawiódł gateway (nie uruchomiony / zły endpoint), a nie aplikacja.
+        Rozdzielamy dwa powody błędu transportu, bo prowadzą do różnych działań użytkownika:
+        **timeout** (gateway ciężko liczy długi materiał) → komunikat o limicie czasu z podpowiedzią
+        „zwiększ summary_timeout"; **błąd połączenia** (gateway nie wstał / zły endpoint) →
+        komunikat NAZYWAJĄCY gateway (``Gateway niedostępny``). Mylenie ich sugerowało padnięty
+        gateway, gdy ten tylko wolno liczył.
         """
         payload = build_summary_request(text, route, self.config)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -179,6 +209,12 @@ class SummaryClient:
         try:
             raw = self.transport(url, body, self._headers(), self.config.timeout)
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            if _is_timeout(exc):
+                raise GatewayError(
+                    f"Streszczanie przekroczyło limit czasu ({int(self.config.timeout)} s) — długi "
+                    "materiał na lokalnym modelu może potrzebować kilku minut; zwiększ "
+                    "summary_timeout."
+                ) from exc
             raise GatewayError(f"Gateway niedostępny ({self.config.base_url}): {exc}") from exc
         try:
             data = json.loads(raw)

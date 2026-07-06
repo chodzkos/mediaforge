@@ -30,7 +30,13 @@ from PySide6.QtWidgets import (
 
 from mediaforge.core import config as cfg_mod
 from mediaforge.core import secrets
-from mediaforge.core.ai.summarize import SummaryClient, SummaryConfig
+from mediaforge.core.ai.routing import resolve_route
+from mediaforge.core.ai.summarize import (
+    SummaryClient,
+    SummaryConfig,
+    read_transcript_text,
+    summary_start_line,
+)
 from mediaforge.core.ai.transcribe import WhisperCppBackend
 from mediaforge.core.detection import tools as detect_tools
 from mediaforge.core.engines.download_engine import DownloaderEngine, run_ytdlp_update
@@ -454,7 +460,7 @@ class LibraryWidget(QWidget):
                 "error",
             )
             return
-        rec_id, _folder, meta = self._current
+        rec_id, folder, meta = self._current
         try:
             enqueue_summarize(
                 self._store,
@@ -468,6 +474,27 @@ class LibraryWidget(QWidget):
             return
         where = "chmura" if meta.cloud_ok else "lokalnie"
         self._log.append_line(f"Streszczanie w kolejce ({where}): {meta.title}", "queued")
+        self._log_summary_input(folder, meta)
+
+    def _log_summary_input(self, folder: Path, meta: MaterialMetadata) -> None:
+        """Loguje rozmiar wejścia streszczenia (znaki, model, timeout) do LogView.
+
+        Job jest już w kolejce — błąd odczytu transkryptu nie może wywrócić akcji, więc linię
+        po cichu pomijamy. Trasę (model) liczymy tak samo jak :func:`enqueue_summarize`.
+        """
+        if not meta.transcript_json:
+            return
+        try:
+            text = read_transcript_text(folder / meta.transcript_json)
+        except (OSError, ValueError):
+            return
+        route = resolve_route(
+            cloud_ok=meta.cloud_ok,
+            local_model=cfg_mod.get_summary_model_local(self._config),
+            cloud_model=cfg_mod.get_summary_model_cloud(self._config),
+        )
+        timeout = cfg_mod.get_summary_timeout(self._config)
+        self._log.append_line(summary_start_line(len(text), route.model, timeout), "running")
 
     # ── Polling statusów zadań (QTimer; bez sygnałów z wątków roboczych) ──────
 

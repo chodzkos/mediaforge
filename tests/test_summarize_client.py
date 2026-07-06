@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from collections.abc import Mapping
 
 import pytest
@@ -14,9 +15,20 @@ from mediaforge.core.ai.summarize import (
     SummaryConfig,
     build_summary_request,
     parse_summary_response,
+    summary_start_line,
 )
 
 _ROUTE = ModelRoute(RouteKind.LOCAL, "ollama/qwen3:27b")
+
+
+def _client_raising(exc: Exception, *, timeout: float = 600.0) -> SummaryClient:
+    """Klient z transportem, który zawsze rzuca ``exc`` (symulacja błędu sieci/timeoutu)."""
+
+    def transport(url: str, body: bytes, headers: Mapping[str, str], timeout_: float) -> bytes:
+        raise exc
+
+    config = SummaryConfig(base_url="http://gw:4000", timeout=timeout)
+    return SummaryClient(config, transport=transport)
 
 
 def test_build_request_shape() -> None:
@@ -78,6 +90,41 @@ def test_endpoint_trailing_slash_normalized() -> None:
         client = SummaryClient(SummaryConfig(base_url=base), transport=transport)
         client.summarize("t", _ROUTE)
         assert captured["url"] == "http://gw:4000/v1/chat/completions"
+
+
+def test_summarize_timeout_message_not_gateway_down() -> None:
+    """Timeout transportu → komunikat o limicie czasu (z liczbą s), NIE „niedostępny"."""
+    client = _client_raising(TimeoutError("timed out"), timeout=600)
+    with pytest.raises(GatewayError, match="limit czasu") as exc_info:
+        client.summarize("t", _ROUTE)
+    message = str(exc_info.value)
+    assert "600" in message  # limit widoczny — użytkownik wie, co zwiększyć
+    assert "niedostępny" not in message
+
+
+def test_summarize_timeout_wrapped_in_urlerror() -> None:
+    """Timeout opakowany w URLError.reason też → komunikat o limicie czasu (tak zwraca urllib)."""
+    client = _client_raising(urllib.error.URLError(TimeoutError("timed out")))
+    with pytest.raises(GatewayError, match="limit czasu"):
+        client.summarize("t", _ROUTE)
+
+
+def test_summarize_connection_refused_says_gateway_down() -> None:
+    """Odrzucone połączenie (gatewaya nie ma) → dotychczasowe „niedostępny (URL)", nie timeout."""
+    client = _client_raising(ConnectionRefusedError("refused"))
+    with pytest.raises(GatewayError, match="niedostępny") as exc_info:
+        client.summarize("t", _ROUTE)
+    message = str(exc_info.value)
+    assert "http://gw:4000" in message
+    assert "limit czasu" not in message
+
+
+def test_summary_start_line_contains_input_size() -> None:
+    """Linia startowa niesie rozmiar wejścia (tys. znaków), model i timeout — diagnoza od ręki."""
+    line = summary_start_line(85_000, "ollama/qwen3:27b", 600.0)
+    assert "~85 tys. znaków" in line
+    assert "ollama/qwen3:27b" in line
+    assert "600 s" in line
 
 
 def test_parse_ok() -> None:
