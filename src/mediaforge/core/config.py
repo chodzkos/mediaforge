@@ -50,7 +50,7 @@ _SUMMARY_MODEL_LOCAL_KEY = "summary_model_local"  # model lokalny gatewaya (np. 
 _SUMMARY_MODEL_CLOUD_KEY = "summary_model_cloud"  # model chmurowy (None = brak trasy chmurowej)
 _SUMMARY_LANGUAGE_KEY = "summary_language"  # język streszczenia (domyślnie pl)
 _SUMMARY_MAX_TOKENS_KEY = "summary_max_tokens"  # limit tokenów odpowiedzi streszczenia
-_SUMMARY_TIMEOUT_KEY = "summary_timeout_sec"  # timeout żądania do gatewaya (domyślnie 120 s)
+_SUMMARY_TIMEOUT_KEY = "summary_timeout_sec"  # timeout żądania do gatewaya (domyślnie 600 s)
 _SUMMARY_PROMPT_SUFFIX_KEY = "summary_prompt_suffix"  # sufiks system-promptu (qwen3: /no_think)
 
 
@@ -225,11 +225,15 @@ def get_summary_prompt_suffix(cfg: Config) -> str:
 
 
 def get_summary_timeout(cfg: Config) -> float:
-    """Timeout żądania do gatewaya w sekundach (domyślnie 120 — wolny model lokalny)."""
+    """Timeout żądania do gatewaya w sekundach (domyślnie 600 — długi materiał lokalnie).
+
+    600 s, bo 2-godzinny transkrypt to kilkuminutowy prefill+generacja na lokalnym modelu 27b —
+    dawne 120 s padało w połowie pracy (mylnie jako „gateway niedostępny", patrz SummaryClient).
+    """
     value = cfg.get(_SUMMARY_TIMEOUT_KEY)
     if isinstance(value, int | float) and value > 0:
         return float(value)
-    return 120.0
+    return 600.0
 
 
 def get_record_preroll_sec(cfg: Config) -> int:
