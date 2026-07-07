@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Zależności Pythona zarządzane przez uv (pyproject.toml + uv.lock).
+  # UWAGA: pin gita chodzkos-gui-kit (SHA) podbijamy RĘCZNIE osobnym commitem
+  # (chore:) — Dependabot nie widzi zależności git i go nie ruszy.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Akcje w workflowach GitHub Actions (przypięte do SHA, komentarz = wersja).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

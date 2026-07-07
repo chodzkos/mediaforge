@@ -19,10 +19,10 @@ jobs:
     # (Świadomie unikamy macOS — bilingowany 10x.)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3
         with:
           enable-cache: true
 
@@ -45,3 +45,12 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: uv run pytest
+
+      - name: Audit dependencies (pip-audit)
+        # Eksport locka do requirements i audyt. Wykluczamy projekt (--no-emit-project)
+        # oraz gui-kit (--no-emit-package) — pip-audit nie audytuje zależności git.
+        # Zakres = to, co instaluje `uv sync --extra dev` (spójnie z CI); extras
+        # transcribe-hf/ct2 świadomie pomijamy (nightly torch, poza torem CI).
+        run: |
+          uv export --format requirements-txt --no-emit-project --no-emit-package chodzkos-gui-kit --extra dev > req-audit.txt
+          uv run --with pip-audit pip-audit -r req-audit.txt

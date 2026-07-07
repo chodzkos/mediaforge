@@ -11,9 +11,9 @@ keywords = ["transcription", "whisper", "archive", "education", "pyside6"]
 dependencies = [
     "PySide6>=6.7",          # GUI (LGPL — zgodne z MIT)
     # Wspólny standard GUI — paleta, ThemeManager, titlebar DWM, dialogi, widgety.
-    # Pin do TAGA (nigdy main). Podniesienie wersji = osobny commit chore: + testy.
+    # Pin do SHA (tag w komentarzu; tag jest mutowalny). Podniesienie wersji = osobny commit chore: + testy.
     # platformdirs wchodzi tranzytywnie z kitu (jego config.py go używa).
-    "chodzkos-gui-kit[qt] @ git+https://github.com/chodzkos/gui-kit@v0.5.0",
+    "chodzkos-gui-kit[qt] @ git+https://github.com/chodzkos/gui-kit@09938082b2b5d2250fb1adfb2fd238a8199366ec",  # v0.5.0
     "keyring>=25",           # sekrety w systemowym magazynie poświadczeń
     "yt-dlp>=2024.0",        # pobieranie (etap późny); luźny pin — patrz CLAUDE.md
     "typer>=0.12",           # CLI
