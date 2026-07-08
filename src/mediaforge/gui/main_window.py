@@ -12,10 +12,12 @@ dialogów kitu). Re-render historii logu po zmianie motywu robi ``LogView.set_th
 
 from __future__ import annotations
 
+from typing import Any
+
 from chodzkos_gui_kit.config import Config
 from chodzkos_gui_kit.qt.theme import ThemeManager, ThemeSetting, current_palette
 from chodzkos_gui_kit.qt.widgets import LogView
-from PySide6.QtCore import QByteArray
+from PySide6.QtCore import QByteArray, QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -41,6 +43,35 @@ _THEME_LABELS = {"auto": "Motyw: Auto", "light": "Motyw: Jasny", "dark": "Motyw:
 _LOG_LEVEL_COLORS = {"recording": "red", "transcribing": "accent2"}
 
 
+class _EnvSignals(QObject):
+    """Most sygnałowy dla :class:`_EnvironmentProbe` (QRunnable nie jest QObject)."""
+
+    report_ready = Signal(dict)
+
+
+class _EnvironmentProbe(QRunnable):
+    """Uruchamia ``detection.check_all`` w puli wątków — sondy (nvidia-smi/ffmpeg/…) poza UI.
+
+    Wynik wraca sygnałem ``report_ready(dict)`` na wątek UI. Most sygnałowy (``signals``) jest
+    WŁASNOŚCIĄ okna (żyje niezależnie od auto-usuwanego runnable), więc emisja jest bezpieczna.
+    """
+
+    def __init__(
+        self, signals: _EnvSignals, *, whispercpp_path: str | None, litellm_base_url: str | None
+    ) -> None:
+        super().__init__()
+        self._signals = signals
+        self._whispercpp_path = whispercpp_path
+        self._litellm_base_url = litellm_base_url
+
+    def run(self) -> None:
+        report = detection.check_all(
+            whispercpp_path=self._whispercpp_path,
+            litellm_base_url=self._litellm_base_url,
+        )
+        self._signals.report_ready.emit(report)
+
+
 class MainWindow(QMainWindow):
     """Główne okno: górny pasek, pusta biblioteka, log statusu, pasek narzędzi."""
 
@@ -53,6 +84,12 @@ class MainWindow(QMainWindow):
         # resize to sensowny start (geometria z configu i tak nadpisze przy ponownym otwarciu).
         self.setMinimumSize(900, 600)
         self.resize(1100, 760)
+
+        # Cache raportu środowiska (z sondy w tle) — m.in. wynik ffmpeg dla RecordDialog, żeby
+        # nie sondować drugi raz. Most sygnałowy jest polem okna (przeżywa auto-usuwany runnable).
+        self._env_report: dict[str, Any] | None = None
+        self._env_signals = _EnvSignals()
+        self._env_signals.report_ready.connect(self._on_report_ready)
 
         self._build_ui()
         self._restore_geometry()
@@ -121,8 +158,13 @@ class MainWindow(QMainWindow):
     # ── Nagrywanie ──────────────────────────────────────────────────────────--
 
     def _open_recorder(self) -> None:
-        """Otwiera dialog nagrywania ekranu/audio (S1); po zamknięciu odświeża bibliotekę."""
-        dialog = RecordDialog(self)
+        """Otwiera dialog nagrywania ekranu/audio (S1); po zamknięciu odświeża bibliotekę.
+
+        Wynik ffmpeg podajemy z cache raportu startowego — dialog nie sonduje ffmpeg drugi raz.
+        Gdy sonda startowa jeszcze nie wróciła (``None``), dialog sam zrobi fallbackową sondę.
+        """
+        ffmpeg_probe = self._env_report.get("ffmpeg") if self._env_report else None
+        dialog = RecordDialog(self, ffmpeg_probe=ffmpeg_probe)
         dialog.exec()
         self._library.refresh_all()
 
@@ -146,11 +188,22 @@ class MainWindow(QMainWindow):
     # ── Środowisko / status ─────────────────────────────────────────────────--
 
     def _report_environment(self) -> None:
-        """Wpisuje do paska statusu i logu startowego — jedno źródło: detection.check_all()."""
-        report = detection.check_all(
+        """Startuje sondę środowiska w tle; status uzupełni :meth:`_on_report_ready`.
+
+        Sondy (nvidia-smi, ffmpeg, yt-dlp, LiteLLM) to subprocessy/sieć — na wątku UI zamroziłyby
+        start okna. Pasek statusu startuje z „wykrywanie środowiska…" i wypełnia się po sygnale.
+        """
+        self._status_label.setText("Wykrywanie środowiska…")
+        probe = _EnvironmentProbe(
+            self._env_signals,
             whispercpp_path=cfg_mod.get_whispercpp_path(self._config),
             litellm_base_url=cfg_mod.get_litellm_base_url(self._config),
         )
+        QThreadPool.globalInstance().start(probe)
+
+    def _on_report_ready(self, report: dict[str, Any]) -> None:
+        """Uzupełnia pasek statusu i log startowy po powrocie sondy środowiska (wątek UI)."""
+        self._env_report = report  # cache (m.in. ffmpeg dla RecordDialog — bez drugiej sondy)
         self._status_label.setText(detection.status_line(report))
         self._log.log_info("mediaforge gotowy.")
         ff = "OK" if report["ffmpeg"]["available"] else "brak"

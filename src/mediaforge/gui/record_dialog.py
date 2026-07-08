@@ -16,11 +16,11 @@ from __future__ import annotations
 import math
 from enum import StrEnum
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from chodzkos_gui_kit.qt.theme import current_palette
 from chodzkos_gui_kit.qt.widgets import LogView, PathEntry
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QScreen
 from PySide6.QtWidgets import (
     QApplication,
@@ -238,17 +238,44 @@ class _FinalizeThread(QThread):
         self.succeeded.emit(artifact)
 
 
+class _DevicesSignals(QObject):
+    """Most sygnałowy dla :class:`_DshowProbe` (QRunnable nie jest QObject)."""
+
+    devices_ready = Signal(object)  # list[DshowAudioDevice]
+
+
+class _DshowProbe(QRunnable):
+    """Enumeruje urządzenia audio dshow (ffmpeg subprocess) w puli wątków, poza wątkiem UI.
+
+    Most sygnałowy (``signals``) jest WŁASNOŚCIĄ dialogu — żyje niezależnie od auto-usuwanego
+    runnable. Odbiorca (slot dialogu) może zniknąć: Qt czyści zakolejkowane zdarzenia zniszczonego
+    QObject, więc emisja po zamknięciu okna jest bezpieczna.
+    """
+
+    def __init__(self, signals: _DevicesSignals) -> None:
+        super().__init__()
+        self._signals = signals
+
+    def run(self) -> None:
+        self._signals.devices_ready.emit(list_dshow_audio_devices())
+
+
 class RecordDialog(QDialog):
     """Okno konfiguracji i sterowania nagrywaniem (źródło, jakość, audio, katalog)."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, parent: QWidget | None = None, *, ffmpeg_probe: dict[str, Any] | None = None
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Nagrywanie ekranu")
         self.setMinimumWidth(520)
 
         Database(cfg_mod.library_db_path()).migrate()
+        # Wynik ffmpeg podaje okno główne z cache raportu startowego (bez drugiej sondy). Fallback
+        # (sonda synchroniczna) tylko, gdy nie podano — np. przy samodzielnej konstrukcji/w CLI.
+        ffmpeg = ffmpeg_probe if ffmpeg_probe is not None else check_ffmpeg()
         self._engine = RecorderEngine(
-            encoders=check_ffmpeg().get("encoders", {}),
+            encoders=ffmpeg.get("encoders", {}),
             store=RecordingStore(cfg_mod.library_db_path()),
         )
         self._session: RecorderSession | None = None
@@ -276,6 +303,13 @@ class RecordDialog(QDialog):
 
         self._build_ui()
         self._sync_controls()
+
+        # Enumeracja dshow (ffmpeg subprocess) w tle — nie blokuje otwarcia okna. Wynik wypełnia
+        # combo po sygnale (do tego czasu placeholder „wykrywam urządzenia…"). Most sygnałowy to
+        # pole dialogu (żyje niezależnie od auto-usuwanego runnable).
+        self._devices_signals = _DevicesSignals()
+        self._devices_signals.devices_ready.connect(self._on_devices_ready)
+        QThreadPool.globalInstance().start(_DshowProbe(self._devices_signals))
 
     # ── Budowa UI ─────────────────────────────────────────────────────────────
 
@@ -326,24 +360,24 @@ class RecordDialog(QDialog):
         form.addRow("", self._mic_audio)
         form.addRow("", self._mix_audio)
 
-        # Enumeracja urządzeń dshow (Windows-only; inny OS → []), rozdzielona na loopback
-        # (dźwięk systemowy) i mikrofony. Combo edytowalne — zachowuje ręczne wpisanie.
-        devices = list_dshow_audio_devices()
-        loopback = [d for d in devices if d.is_loopback]
-        mics = [d for d in devices if not d.is_loopback]
-        self._has_loopback = bool(loopback)
+        # Enumeracja urządzeń dshow idzie w tle (ffmpeg subprocess) — patrz _DshowProbe /
+        # _on_devices_ready. Do czasu sygnału combo pokazują placeholder; brak loopbacku zakładamy
+        # dopóki nie wiemy (ostrzeżenie i tak liczy _sync_controls). Combo edytowalne.
+        self._has_loopback = False
 
         self._sys_device = QComboBox()
         self._sys_device.setEditable(True)
+        self._sys_device.setPlaceholderText("wykrywam urządzenia…")
         self._sys_device.setToolTip(
             "Urządzenie loopback dźwięku systemowego (Stereo Mix / VB-Cable)"
         )
-        self._fill_device_combo(self._sys_device, loopback)
+        self._fill_device_combo(self._sys_device, [])
         form.addRow("Urz. systemowe:", self._sys_device)
         self._mic_device = QComboBox()
         self._mic_device.setEditable(True)
+        self._mic_device.setPlaceholderText("wykrywam urządzenia…")
         self._mic_device.setToolTip("Urządzenie mikrofonu")
-        self._fill_device_combo(self._mic_device, mics)
+        self._fill_device_combo(self._mic_device, [])
         form.addRow("Urz. mikrofonu:", self._mic_device)
 
         # Bez urządzenia loopback nie nagra się dźwięk systemowy — enumeracja go nie tworzy.
@@ -479,6 +513,27 @@ class RecordDialog(QDialog):
             combo.addItem(dev.name, dev.alt_name)
         combo.addItem("", "")  # opcja: brak / wpisz ręcznie
         combo.setCurrentIndex(0 if devices else combo.count() - 1)
+
+    def _on_devices_ready(self, devices: object) -> None:
+        """Wypełnia combo urządzeń po enumeracji dshow w tle (wątek UI).
+
+        Przy AKTYWNYM nagrywaniu nie rusza (nie podmieniamy wyboru urządzeń w trakcie). Ustawia
+        ``_has_loopback`` i odświeża ostrzeżenie o braku loopbacku przez :meth:`_sync_controls`.
+        """
+        if self._session is not None and self._session.state in (
+            RecorderState.RECORDING,
+            RecorderState.PAUSED,
+        ):
+            return
+        device_list = cast("list[DshowAudioDevice]", devices)
+        loopback = [d for d in device_list if d.is_loopback]
+        mics = [d for d in device_list if not d.is_loopback]
+        self._has_loopback = bool(loopback)
+        self._sys_device.setPlaceholderText("")
+        self._mic_device.setPlaceholderText("")
+        self._fill_device_combo(self._sys_device, loopback)
+        self._fill_device_combo(self._mic_device, mics)
+        self._sync_controls()
 
     @staticmethod
     def _device_value(combo: QComboBox) -> str | None:
