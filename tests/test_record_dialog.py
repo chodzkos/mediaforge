@@ -197,6 +197,7 @@ def test_tick_detects_process_death_offers_resume_or_stop(
     assert dialog._pause_btn.isEnabled() and dialog._stop_btn.isEnabled()
     assert not dialog._start_btn.isEnabled()
     assert dialog._pause_btn.text() == "▶ Wznów"
+    dialog._session = None  # sprzątanie: bramka zamknięcia nie prosi o modal w teardown qtbot
 
 
 def test_verify_started_resets_ui_on_immediate_death(
@@ -253,6 +254,78 @@ def test_on_stop_finalize_failure_keeps_segments_and_logs_workdir(
     # Segmenty NIE ruszone + brak wpisu w bibliotece.
     assert work_dir.exists() and any(work_dir.iterdir())
     assert RecordingStore(db_path).list_recordings(RecordingStatus.RECORDED) == []
+
+
+# ── Zamknięcie okna w trakcie nagrania (ochrona przed osieroceniem FFmpeg) ────
+
+
+class _LiveProc:
+    """Atrapa żywego procesu FFmpeg — śledzi, czy zawołano stop_gracefully."""
+
+    def __init__(self) -> None:
+        self.stopped = False
+
+    def stop_gracefully(self, timeout: float = 8.0) -> None:
+        self.stopped = True
+
+    def is_running(self) -> bool:
+        return not self.stopped
+
+
+def _start_recording_with(dialog: rd.RecordDialog, tmp_path: Path, proc: _LiveProc) -> None:
+    """Startuje sesję nagrywania z atrapą żywego procesu (bez pre-rollu, bez realnego FFmpeg)."""
+
+    def factory(command: list[str], log_path: Path | None = None) -> _LiveProc:
+        pattern = command[-1]
+        start = int(command[command.index("-segment_start_number") + 1])
+        Path(pattern % start).write_bytes(b"SEG")
+        return proc
+
+    dialog._engine = RecorderEngine(
+        encoders={"hevc_nvenc": True},
+        store=RecordingStore(tmp_path / "library.sqlite3"),
+        process_factory=factory,
+        concat_runner=_fake_concat,
+    )
+    dialog._sys_audio.setChecked(False)
+    dialog._out_dir.set(str(tmp_path / "out"))
+    dialog._preroll_sec = 0
+    dialog._on_start()
+
+
+def test_close_during_recording_back_keeps_session_and_process(
+    dialog: rd.RecordDialog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """„Wróć": zamknięcie zablokowane — sesja i proces FFmpeg żyją dalej."""
+    proc = _LiveProc()
+    _start_recording_with(dialog, tmp_path, proc)
+    assert dialog._session is not None and dialog._session.state is RecorderState.RECORDING
+
+    monkeypatch.setattr(dialog, "_ask_close_action", lambda: rd.CloseChoice.CANCEL)
+    dialog.close()
+
+    assert dialog._session is not None  # okno nie zamknęło sesji
+    assert dialog._session.state is RecorderState.RECORDING
+    assert proc.stopped is False  # proces FFmpeg nietknięty
+    dialog._session = None  # sprzątanie: bramka zamknięcia nie prosi o modal w teardown qtbot
+
+
+def test_close_during_recording_discard_stops_process(
+    dialog: rd.RecordDialog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """„Porzuć": proces FFmpeg domknięty (stop_gracefully), bez finalizacji i wpisu w bibliotece."""
+    db_path = tmp_path / "library.sqlite3"
+    proc = _LiveProc()
+    _start_recording_with(dialog, tmp_path, proc)
+    assert dialog._session is not None
+
+    monkeypatch.setattr(dialog, "_ask_close_action", lambda: rd.CloseChoice.DISCARD)
+    dialog.close()
+
+    assert proc.stopped is True  # stop_gracefully zawołane na procesie (proces nie osierocony)
+    assert dialog._session is None
+    assert "porzucone" in dialog._log.toPlainText().lower()
+    assert RecordingStore(db_path).list_recordings(RecordingStatus.RECORDED) == []  # brak wpisu
 
 
 # ── Kolizja nazwy: nadpisz / nowa nazwa / anuluj (dialog zamokowany przez _resolve_collision) ──
