@@ -160,6 +160,12 @@ def check_litellm(base_url: str = "http://localhost:4000") -> dict[str, Any]:
 
 
 def check_providers() -> dict[str, bool]:
-    """Które klucze dostawców są w keyring. SAME BOOLEANY — nazwy spójne z core/secrets."""
+    """Które klucze dostawców są w keyring. SAME BOOLEANY — nazwy spójne z core/secrets.
+
+    Serwis i nazwa klucza pochodzą z ``core.secrets`` (ten sam name-builder co strona zapisu),
+    więc odczyt i zapis nie mogą się rozjechać (dawniej: ``api_key_<p>`` vs ``api_key:<p>``).
+    """
+    from mediaforge.core.secrets import SERVICE_NAME, provider_api_key_name
+
     providers = ("anthropic", "openai", "gemini", "deepseek")
-    return {p: api_key_present("mediaforge", f"api_key_{p}") for p in providers}
+    return {p: api_key_present(SERVICE_NAME, provider_api_key_name(p)) for p in providers}

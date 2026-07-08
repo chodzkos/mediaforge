@@ -21,6 +21,10 @@ from keyring.errors import KeyringError, PasswordDeleteError
 
 _SERVICE = "mediaforge"
 
+# Publiczna nazwa serwisu keyring — jedno źródło prawdy dla stron zapisu (tu) i odczytu
+# (np. core/detection.check_providers), żeby nie rozjeżdżały się literały „mediaforge".
+SERVICE_NAME = _SERVICE
+
 # Prefiks kluczy API dostawców — wspólny, by dało się je wylistować/wyczyścić.
 _API_KEY_PREFIX = "api_key:"
 
