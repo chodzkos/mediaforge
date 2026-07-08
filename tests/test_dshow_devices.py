@@ -33,3 +33,22 @@ def test_alt_name_attached() -> None:
 
 def test_empty_no_crash() -> None:
     assert parse_dshow_audio_devices("") == []
+
+
+def test_parser_survives_replacement_chars() -> None:
+    """Źle zdekodowane bajty (errors='replace' → U+FFFD) nie wywalają parsera."""
+    sample = (
+        '[dshow @ 0] "Miks stereo (Realtek�� Audio)" (audio)\n'
+        '[dshow @ 0]   Alternative name "@device_cm_{X}\\Miks stereo"\n'
+        '[dshow @ 0] "���" (audio)\n'
+    )
+    devices = parse_dshow_audio_devices(sample)
+    assert len(devices) == 2  # obie nazwy sparsowane, mimo krzaków
+    # Nazwa z U+FFFD zachowana; loopback wykryty po „miks stereo", alt_name podłączony.
+    assert devices[0].name.startswith("Miks stereo")
+    assert devices[0].is_loopback is True
+    assert devices[0].alt_name.startswith("@device_cm_")
+    # Sama „krzaczasta" nazwa też przechodzi (nie loopback, bez alt_name).
+    assert devices[1].name == "���"
+    assert devices[1].is_loopback is False
+    assert devices[1].alt_name == ""
