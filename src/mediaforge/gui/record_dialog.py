@@ -16,12 +16,14 @@ from __future__ import annotations
 import math
 from enum import StrEnum
 from pathlib import Path
+from typing import cast
 
 from chodzkos_gui_kit.qt.theme import current_palette
 from chodzkos_gui_kit.qt.widgets import LogView, PathEntry
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QScreen
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -37,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from mediaforge.core import config as cfg_mod
 from mediaforge.core.detection import check_ffmpeg
+from mediaforge.core.engines.base import MediaArtifact
 from mediaforge.core.engines.dshow_devices import DshowAudioDevice, list_dshow_audio_devices
 from mediaforge.core.engines.ffmpeg_cmd import (
     PRESETS,
@@ -193,6 +196,48 @@ class _CloseDuringRecordingDialog(QDialog):
         return self._choice
 
 
+class _FinalizeThread(QThread):
+    """Wątek składania nagrania: ``session.stop()`` + ``finalize_to_library`` poza wątkiem UI.
+
+    Część blokująca stopu to graceful-stop FFmpeg (``q`` + ``wait`` do 8 s) i concat segmentów —
+    na wątku UI zamroziłoby okno. To interakcja NA ŻYWO (jedno nagranie tu i teraz), więc świadomie
+    bez kolejki jobs: prosty wątek z sygnałami wyniku. Nadpisane ``run()`` (praca jednorazowa, bez
+    pętli zdarzeń) → wątek kończy się naturalnie po zakończeniu pracy, bez wyścigu quit/exec.
+    Powód porażki wraca tekstem (``failed``) — surowego wyjątku nie da się bezpiecznie przenieść
+    między wątkami. ``succeeded`` (nie ``finished``, bo to własny sygnał ``QThread``).
+    """
+
+    succeeded = Signal(object)  # MediaArtifact
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        engine: RecorderEngine,
+        session: RecorderSession,
+        *,
+        title: str,
+        output_dir: Path,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._engine = engine
+        self._session = session
+        self._title = title
+        self._output_dir = output_dir
+
+    def run(self) -> None:
+        """Wykonuje stop + finalizację; emituje ``succeeded(artifact)`` albo ``failed(str)``."""
+        try:
+            self._session.stop()
+            artifact = self._engine.finalize_to_library(
+                self._session, title=self._title, output_dir=self._output_dir
+            )
+        except Exception as exc:  # powód do wątku UI sygnałem (nie surowy wyjątek między wątkami)
+            self.failed.emit(str(exc))
+            return
+        self.succeeded.emit(artifact)
+
+
 class RecordDialog(QDialog):
     """Okno konfiguracji i sterowania nagrywaniem (źródło, jakość, audio, katalog)."""
 
@@ -214,10 +259,20 @@ class RecordDialog(QDialog):
         # Okno sondy startu: do 1,5 s po starcie o śmierci procesu decyduje _verify_started
         # (reset UI), nie _tick (który po tym oknie proponuje Wznów/Zatrzymaj).
         self._awaiting_start_verify = False
+        # Składanie (stop + concat) idzie na osobnym wątku — trzymamy referencję żywego wątku
+        # (inaczej GC by go uprzątnął) i flagę „trwa składanie" (blokada UI).
+        self._finalize_thread: _FinalizeThread | None = None
+        self._finalizing = False
 
         self._timer = QTimer(self)
         self._timer.setInterval(500)
         self._timer.timeout.connect(self._tick)
+        # Sonda startu jako timer WŁASNOŚCI dialogu (nie QTimer.singleShot) — ginie razem z oknem,
+        # więc nie odpali się na już zniszczonym dialogu (co przy pętli zdarzeń wywala natywnie).
+        self._start_probe = QTimer(self)
+        self._start_probe.setSingleShot(True)
+        self._start_probe.setInterval(1500)
+        self._start_probe.timeout.connect(self._verify_started)
 
         self._build_ui()
         self._sync_controls()
@@ -367,11 +422,13 @@ class RecordDialog(QDialog):
             RecorderState.RECORDING,
             RecorderState.PAUSED,
         )
-        self._start_btn.setEnabled(not recording)
-        self._pause_btn.setEnabled(recording)
-        self._stop_btn.setEnabled(recording)
+        # Podczas składania (stop+concat na wątku roboczym) wszystkie sterowania są zablokowane.
+        busy = self._finalizing
+        self._start_btn.setEnabled(not recording and not busy)
+        self._pause_btn.setEnabled(recording and not busy)
+        self._stop_btn.setEnabled(recording and not busy)
         for w in (self._mode_combo, self._preset_combo, self._title_edit, self._out_dir):
-            w.setEnabled(not recording)
+            w.setEnabled(not recording and not busy)
 
     # ── Budowanie opcji z UI ────────────────────────────────────────────────────
 
@@ -508,7 +565,7 @@ class RecordDialog(QDialog):
         # Sonda natychmiastowej śmierci: FFmpeg z błędną konfiguracją (złe urządzenie, brak
         # enkodera) pada od razu. Po 1,5 s sprawdzamy, czy w ogóle ruszył.
         self._awaiting_start_verify = True
-        QTimer.singleShot(1500, self._verify_started)
+        self._start_probe.start()
         self._sync_controls()
 
     def _verify_started(self) -> None:
@@ -549,32 +606,60 @@ class RecordDialog(QDialog):
         self._sync_controls()
 
     def _on_stop(self) -> None:
-        if self._session is None:
+        # Stop + składanie (concat) są blokujące → wątek roboczy, żeby okno nie zamarzło.
+        if self._session is None or self._finalizing:
             return
         self._timer.stop()
-        self._session.stop()
         self._log.append_line("Składanie segmentów…", "info")
-        try:
-            artifact = self._engine.finalize_to_library(
-                self._session,
-                title=self._title_edit.text(),
-                output_dir=Path(self._out_dir.get() or str(cfg_mod.default_recordings_dir())),
-            )
-        except Exception as exc:  # błąd składania pokazujemy w logu, nie wywalamy GUI
-            # Katalog _work z segmentami NIE jest ruszany — zostają do ręcznego odzysku.
-            work_dir = self._session.work_dir
-            self._log.append_line(f"Błąd finalizacji: {exc}", "error")
-            self._log.append_line(f"Segmenty zachowane do odzysku: {work_dir}", "info")
-            self._session = None
-            self._sync_controls()
-            return
-        target = artifact.video_path or artifact.audio_path
+        self._set_finalizing(True)
+
+        thread = _FinalizeThread(
+            self._engine,
+            self._session,
+            title=self._title_edit.text(),
+            output_dir=Path(self._out_dir.get() or str(cfg_mod.default_recordings_dir())),
+            parent=self,
+        )
+        thread.succeeded.connect(self._on_finalize_finished)
+        thread.failed.connect(self._on_finalize_failed)
+        # Po naturalnym końcu run(): usuń obiekt wątku i wyczyść referencję.
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_finalize_thread)
+        self._finalize_thread = thread
+        thread.start()
+
+    def _set_finalizing(self, active: bool) -> None:
+        """Blokuje/odblokowuje UI na czas składania (przyciski w ``_sync_controls`` + kursor)."""
+        self._finalizing = active
+        if active:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        else:
+            QApplication.restoreOverrideCursor()
+        self._sync_controls()
+
+    def _clear_finalize_thread(self) -> None:
+        self._finalize_thread = None
+
+    def _on_finalize_finished(self, artifact: object) -> None:
+        """Sukces składania (wątek roboczy → wątek UI): log, reset sesji, odblokowanie UI."""
+        art = cast(MediaArtifact, artifact)
+        target = art.video_path or art.audio_path
         self._log.append_line(f"Zapisano: {target}", "saved")
         cfg_parent = self.parent()
         self._session = None
         self._pause_btn.setText("⏸ Pauza")
-        self._sync_controls()
+        self._set_finalizing(False)
         _ = cfg_parent  # rezerwacja: odświeżenie biblioteki w głównym oknie (S2)
+
+    def _on_finalize_failed(self, message: str) -> None:
+        """Porażka składania: log błędu + ścieżka _work (segmenty do odzysku), odblokowanie UI."""
+        # Katalog _work z segmentami NIE jest ruszany — zostają do ręcznego odzysku.
+        work_dir = self._session.work_dir if self._session is not None else None
+        self._log.append_line(f"Błąd finalizacji: {message}", "error")
+        if work_dir is not None:
+            self._log.append_line(f"Segmenty zachowane do odzysku: {work_dir}", "info")
+        self._session = None
+        self._set_finalizing(False)
 
     # ── Cykl życia okna (ochrona przed osieroceniem procesu FFmpeg) ───────────────
 
