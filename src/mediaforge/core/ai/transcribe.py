@@ -30,6 +30,24 @@ from mediaforge.core.engines.import_engine import build_extract_wav_command
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
+class TranscriptionError(RuntimeError):
+    """Transkrypcja nie powiodła się — ffmpeg/whisper-cli zwrócił błąd lub nie ma pliku wyjściowego.
+
+    Rzucany, gdy proceduralny kontrakt runnera zostaje złamany (returncode != 0 albo brak
+    oczekiwanego pliku). Podnoszony do handlera kolejki → job trafia w ``mark_failed`` z retry.
+    """
+
+
+def _stderr_tail(stderr: str, *, lines: int = 5) -> str:
+    """Końcówka stderr (ostatnie ~``lines`` niepustych linii) do komunikatu błędu.
+
+    Runner zwraca CAŁY bufor stderr (bywa bardzo długi) — do wyjątku bierzemy tylko końcówkę,
+    nigdy całości (nie logujemy pełnego bufora na poziomie error).
+    """
+    tail = [line for line in stderr.splitlines() if line.strip()][-lines:]
+    return "\n".join(tail)
+
+
 class Backend(StrEnum):
     WHISPERCPP = "whispercpp"  # DEFAULT
     FASTER_WHISPER = "faster_whisper"  # tylko compute_type=float16 na sm_120
@@ -312,10 +330,20 @@ class WhisperCppBackend:
 
         ``on_progress(pct)`` woła się przy ZMIANIE procentu (throttle) — strumieniowane ze
         stderr whisper-cli (``--print-progress``). Backend (cuda/cpu) wykrywany z pełnego buforu.
+
+        Głośna porażka: błąd ffmpeg/whisper-cli lub brak pliku wyjściowego →
+        :class:`TranscriptionError` (nie „done"). Wyjątek leci do handlera → ``mark_failed``.
         """
+        if not self.model:  # sprawdzamy PRZED odpaleniem runnera (nie ma czym transkrybować)
+            raise TranscriptionError("nie skonfigurowano modelu whisper (whisper_model)")
+
         out_dir.mkdir(parents=True, exist_ok=True)
         wav = out_dir / "audio16k.wav"
-        self.runner(build_extract_wav_command(source, wav, self.ffmpeg))
+        extract = self.runner(build_extract_wav_command(source, wav, self.ffmpeg))
+        if extract.returncode != 0 or not wav.is_file():
+            raise TranscriptionError(
+                f"ffmpeg nie przygotował audio ({source}): {_stderr_tail(extract.stderr)}"
+            )
 
         language = opts.language or "auto"
         out_prefix = out_dir / source.stem
@@ -346,16 +374,20 @@ class WhisperCppBackend:
         model_name = Path(self.model).stem
         json_path = out_dir / f"{source.stem}.json"
         srt_path = out_dir / f"{source.stem}.srt"
+        if run.returncode != 0 or not json_path.is_file():
+            raise TranscriptionError(
+                f"whisper-cli nie wytworzył transkryptu ({source}): {_stderr_tail(run.stderr)}"
+            )
+
         transcript = Transcript(language=language, model=model_name)
-        if json_path.is_file():
-            with contextlib.suppress(OSError, ValueError):
-                transcript = parse_whisper_json(
-                    json.loads(json_path.read_text(encoding="utf-8")), model=model_name
-                )
+        with contextlib.suppress(OSError, ValueError):
+            transcript = parse_whisper_json(
+                json.loads(json_path.read_text(encoding="utf-8")), model=model_name
+            )
         return TranscriptionResult(
             transcript=transcript,
             runtime=runtime,
-            json_path=json_path if json_path.is_file() else None,
+            json_path=json_path,
             srt_path=srt_path if srt_path.is_file() else None,
         )
 
