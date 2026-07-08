@@ -256,7 +256,38 @@ def test_finalize_concat_failure_raises_and_writes_nothing(tmp_path: Path) -> No
 
     assert not (tmp_path / "out" / "Nagranie" / "metadata.json").exists()
     assert store.list_materials() == []
+    # Po NIEUDANYM finalize _work zostaje (ręczny odzysk) — nie sprzątamy przed weryfikacją.
+    assert session.work_dir.exists()
     assert list(segments.list_segments(session.work_dir))  # segmenty do ręcznego odzysku
+
+
+def test_finalize_success_removes_work_dir(tmp_path: Path) -> None:
+    """Po ZWERYFIKOWANYM sukcesie (plik istnieje, size>0) segmenty _work są sprzątane."""
+    db = tmp_path / "lib.sqlite3"
+    Database(db).migrate()
+    store = RecordingStore(db)
+    engine = RecorderEngine(
+        encoders=_ENCODERS,
+        store=store,
+        process_factory=_fake_factory([]),  # tworzy segment
+        concat_runner=_fake_concat([]),  # tworzy plik wynikowy (size>0)
+    )
+    session = engine.new_session(
+        source=CaptureSource(),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["standard"],
+        work_dir=tmp_path / "out" / "Nagranie" / "_work",
+    )
+    session.start()
+    session.stop()
+    assert session.work_dir.exists()  # segmenty są przed finalize
+
+    engine.finalize_to_library(session, title="Nagranie", output_dir=tmp_path / "out")
+
+    # Plik wynikowy zapisany, a redundantne _work usunięte; folder materiału i wpis zostają.
+    assert (tmp_path / "out" / "Nagranie" / "Nagranie.mkv").is_file()
+    assert not session.work_dir.exists()
+    assert len(store.list_recordings(RecordingStatus.RECORDED)) == 1
 
 
 def test_invalid_transitions_raise(tmp_path: Path) -> None:

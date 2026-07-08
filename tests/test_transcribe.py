@@ -124,6 +124,28 @@ def test_whispercpp_backend_orchestration(tmp_path: Path) -> None:
     assert any("--output-json" in c for c in commands)
 
 
+def test_transcribe_removes_intermediate_wav_on_success(tmp_path: Path) -> None:
+    """Po udanym transkrypcie (JSON sparsowany) półprodukt audio16k.wav jest kasowany."""
+    src = tmp_path / "lecture.mp4"
+    src.write_bytes(b"x")
+    out_dir = tmp_path / "material"
+
+    def fake_runner(cmd: list[str], on_line: LineCb | None = None) -> RunResult:
+        if "-of" in cmd:  # whisper-cli → json/srt
+            prefix = cmd[cmd.index("-of") + 1]
+            Path(prefix + ".json").write_text(json.dumps(_SAMPLE_JSON), encoding="utf-8")
+            Path(prefix + ".srt").write_text("1\n", encoding="utf-8")
+            return RunResult(0, _CUDA_LOG)
+        Path(cmd[-1]).write_bytes(b"RIFF")  # konwersja WAV → utwórz plik audio
+        return RunResult(0, "")
+
+    backend = WhisperCppBackend(model="/m/medium.bin", runner=fake_runner)
+    result = backend.transcribe(src, out_dir, TranscribeOptions())
+
+    assert result.json_path is not None and result.json_path.is_file()  # transkrypt został
+    assert not (out_dir / "audio16k.wav").exists()  # półprodukt sprzątnięty po sukcesie
+
+
 # ── Głośna porażka (nie „done" po cichu) ──────────────────────────────────────
 
 
