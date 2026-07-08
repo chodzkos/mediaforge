@@ -20,7 +20,7 @@ from pathlib import Path
 from chodzkos_gui_kit.qt.theme import current_palette
 from chodzkos_gui_kit.qt.widgets import LogView, PathEntry
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QGuiApplication, QScreen
+from PySide6.QtGui import QCloseEvent, QGuiApplication, QScreen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -139,6 +139,58 @@ class _CollisionDialog(QDialog):
 
     def chosen_name(self) -> str:
         return self._name_edit.text().strip()
+
+
+class CloseChoice(StrEnum):
+    """Decyzja przy próbie zamknięcia okna w trakcie nagrywania."""
+
+    STOP_SAVE = "stop_save"  # zatrzymaj + finalizuj (wpis w bibliotece)
+    DISCARD = "discard"  # domknij proces bez zapisu (segmenty w _work)
+    CANCEL = "cancel"  # wróć do nagrywania (nie zamykaj)
+
+
+class _CloseDuringRecordingDialog(QDialog):
+    """Potwierdzenie zamknięcia w trakcie nagrania: Zatrzymaj i zapisz / Porzuć / Wróć.
+
+    Themed jak :class:`_CollisionDialog` (motyw z ``ThemeManager``, świadomie NIE natywny
+    ``QMessageBox``). Domyślny (Enter) i Esc = „Wróć" — bezpieczny wybór, który nie osierocamy
+    procesu FFmpeg ani nie traci danych.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Trwa nagrywanie")
+        self._choice = CloseChoice.CANCEL
+
+        root = QVBoxLayout(self)
+        root.addWidget(QLabel("Trwa nagrywanie. Co zrobić przed zamknięciem okna?"))
+
+        row = QHBoxLayout()
+        discard_btn = QPushButton("Porzuć nagranie")
+        discard_btn.setToolTip("Zatrzymaj FFmpeg bez zapisu — segmenty zostają do ręcznego odzysku")
+        discard_btn.clicked.connect(self._choose_discard)
+        back_btn = QPushButton("Wróć")
+        back_btn.setDefault(True)
+        back_btn.clicked.connect(self.reject)
+        stop_btn = QPushButton("Zatrzymaj i zapisz")
+        stop_btn.setToolTip("Zakończ nagranie, sklej segmenty i zapisz do biblioteki")
+        stop_btn.clicked.connect(self._choose_stop_save)
+        row.addWidget(discard_btn)
+        row.addStretch(1)
+        row.addWidget(back_btn)
+        row.addWidget(stop_btn)
+        root.addLayout(row)
+
+    def _choose_stop_save(self) -> None:
+        self._choice = CloseChoice.STOP_SAVE
+        self.accept()
+
+    def _choose_discard(self) -> None:
+        self._choice = CloseChoice.DISCARD
+        self.accept()
+
+    def choice(self) -> CloseChoice:
+        return self._choice
 
 
 class RecordDialog(QDialog):
@@ -523,6 +575,71 @@ class RecordDialog(QDialog):
         self._pause_btn.setText("⏸ Pauza")
         self._sync_controls()
         _ = cfg_parent  # rezerwacja: odświeżenie biblioteki w głównym oknie (S2)
+
+    # ── Cykl życia okna (ochrona przed osieroceniem procesu FFmpeg) ───────────────
+
+    def _session_active(self) -> bool:
+        """Czy trwa nagranie (RECORDING/PAUSED) — czyli zamknięcie osierociłoby proces FFmpeg."""
+        return self._session is not None and self._session.state in (
+            RecorderState.RECORDING,
+            RecorderState.PAUSED,
+        )
+
+    def _ask_close_action(self) -> CloseChoice:
+        """Pokazuje themed dialog potwierdzenia zamknięcia i zwraca wybór. Seam do testów."""
+        dlg = _CloseDuringRecordingDialog(self)
+        dlg.exec()
+        return dlg.choice()
+
+    def _confirm_close(self) -> bool:
+        """Wspólna bramka zamknięcia (closeEvent + reject/Esc).
+
+        Bez aktywnej sesji zamknięcie jest bezwarunkowe. W trakcie nagrania pyta użytkownika:
+        „Zatrzymaj i zapisz" (finalizacja), „Porzuć nagranie" (domknięcie procesu bez zapisu —
+        segmenty zostają w ``_work``) albo „Wróć". Zwraca ``True``, gdy okno może się zamknąć,
+        ``False`` przy „Wróć" (zostajemy w oknie, proces żyje dalej).
+        """
+        if not self._session_active():
+            return True
+        choice = self._ask_close_action()
+        if choice is CloseChoice.CANCEL:
+            return False
+        if choice is CloseChoice.STOP_SAVE:
+            self._on_stop()  # zatrzymaj + finalizuj (wpis w bibliotece)
+            return True
+        self._discard_session()  # DISCARD
+        return True
+
+    def _discard_session(self) -> None:
+        """Porzucenie nagrania: graceful stop procesu FFmpeg BEZ finalizacji.
+
+        Nie osierocamy procesu (``session.stop()`` domyka FFmpeg przez ``q``), ale nie sklejamy
+        ani nie piszemy do biblioteki — segmenty zostają w ``_work`` do ręcznego odzysku.
+        """
+        if self._session is None:
+            return
+        self._timer.stop()
+        work_dir = self._session.work_dir
+        self._session.stop()  # domknięcie procesu FFmpeg, bez finalize_to_library
+        self._log.append_line(
+            f"Nagranie porzucone — segmenty zostają do ręcznego odzysku w {work_dir}", "paused"
+        )
+        self._session = None
+        self._sync_controls()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Blokuje zamknięcie w trakcie nagrania, dopóki użytkownik nie zdecyduje o procesie."""
+        if not self._confirm_close():
+            event.ignore()
+            return
+        event.accept()
+        super().closeEvent(event)
+
+    def reject(self) -> None:
+        """Esc / przycisk Close idą przez ``reject`` — ta sama bramka co :meth:`closeEvent`."""
+        if not self._confirm_close():
+            return
+        super().reject()
 
     # ── Timer / telemetria ───────────────────────────────────────────────────────
 
