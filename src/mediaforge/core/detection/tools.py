@@ -25,12 +25,20 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from mediaforge.core.winutil import NO_WINDOW_FLAGS
+
 _TIMEOUT = 5
 
 
 def _run(cmd: list[str], timeout: int = _TIMEOUT) -> str:
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            creationflags=NO_WINDOW_FLAGS,
+        )
         return proc.stdout or proc.stderr or ""
     except Exception:
         return ""

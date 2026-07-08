@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -27,8 +26,7 @@ from mediaforge.core.engines.base import (
 from mediaforge.core.engines.recorder import safe_filename
 from mediaforge.core.library.material import MaterialMetadata, write_metadata
 from mediaforge.core.library.recordings import RecordingStore
-
-_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+from mediaforge.core.winutil import NO_WINDOW_FLAGS
 
 VIDEO_EXTS: frozenset[str] = frozenset({".mp4", ".mkv", ".mov", ".webm", ".avi"})
 AUDIO_EXTS: frozenset[str] = frozenset({".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"})
@@ -140,7 +138,7 @@ def _default_runner(command: list[str]) -> int:
         command,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        creationflags=_NO_WINDOW,
+        creationflags=NO_WINDOW_FLAGS,
         check=False,
     )
     return proc.returncode
@@ -153,7 +151,7 @@ def _default_probe_runner(command: list[str]) -> str:
             capture_output=True,
             text=True,
             timeout=30,
-            creationflags=_NO_WINDOW,
+            creationflags=NO_WINDOW_FLAGS,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):

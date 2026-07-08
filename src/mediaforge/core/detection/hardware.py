@@ -20,6 +20,7 @@ from functools import lru_cache
 from typing import Any
 
 from mediaforge.core.compute import ComputeProfile, GPUArch, classify
+from mediaforge.core.winutil import NO_WINDOW_FLAGS
 
 _TIMEOUT = 5
 
@@ -41,6 +42,7 @@ def _nvidia_smi(query: str) -> str:
             capture_output=True,
             text=True,
             timeout=_TIMEOUT,
+            creationflags=NO_WINDOW_FLAGS,
         )
         if proc.returncode != 0:
             return ""
