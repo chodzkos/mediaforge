@@ -9,7 +9,14 @@ czyste. Render i polityka tierów (compute.classify) zostają app-side. Patrz do
 from . import hardware, report, tools
 from .hardware import arch_from_name, check_gpu, detect_arch, resolved_arch, resolved_profile
 from .report import check_all, render_report, status_line, whisper_cuda_ok
-from .tools import check_ffmpeg, check_providers, check_whispercpp, check_ytdlp, probe_tool
+from .tools import (
+    check_ffmpeg,
+    check_providers,
+    check_whispercpp,
+    check_ytdlp,
+    probe_encoder,
+    probe_tool,
+)
 
 __all__ = [
     "arch_from_name",
@@ -21,6 +28,7 @@ __all__ = [
     "check_ytdlp",
     "detect_arch",
     "hardware",
+    "probe_encoder",
     "probe_tool",
     "render_report",
     "report",

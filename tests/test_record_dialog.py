@@ -65,6 +65,33 @@ def test_dialog_uses_kit_widgets_and_presets(dialog: rd.RecordDialog) -> None:
     assert "recording" in rd.RECORD_LEVEL_COLORS  # status nagrywania ma kolor
 
 
+def test_engine_uses_usable_encoders_not_build(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M21: silnik dostaje encoders_usable (runtime), nie build — NVENC-widmo poza wyborem."""
+    monkeypatch.setattr(cfg_mod, "library_db_path", lambda: tmp_path / "library.sqlite3")
+    monkeypatch.setattr(cfg_mod, "default_recordings_dir", lambda: tmp_path / "out")
+    probe = {
+        "available": True,
+        "encoders": {"hevc_nvenc": True, "libx264": True},  # build: NVENC obecny
+        "encoders_usable": {"hevc_nvenc": False, "libx264": True},  # runtime: NVENC martwy
+    }
+    dlg = rd.RecordDialog(ffmpeg_probe=probe)
+    qtbot.addWidget(dlg)
+    assert dlg._engine.encoders == {"hevc_nvenc": False, "libx264": True}
+
+
+def test_engine_falls_back_to_build_encoders_without_probe(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stary raport bez encoders_usable → wybór spada na build-presence (zgodność wsteczna)."""
+    monkeypatch.setattr(cfg_mod, "library_db_path", lambda: tmp_path / "library.sqlite3")
+    monkeypatch.setattr(cfg_mod, "default_recordings_dir", lambda: tmp_path / "out")
+    dlg = rd.RecordDialog(ffmpeg_probe={"available": True, "encoders": {"hevc_nvenc": True}})
+    qtbot.addWidget(dlg)
+    assert dlg._engine.encoders == {"hevc_nvenc": True}
+
+
 def test_full_monitor_has_no_region(dialog: rd.RecordDialog) -> None:
     dialog._mode_combo.setCurrentIndex(0)
     src = dialog._build_capture_source()

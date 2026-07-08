@@ -42,7 +42,8 @@ def doctor(as_json: bool = typer.Option(False, "--json")) -> None:
     from mediaforge.core import config, detection
 
     cfg = config.load()
-    # doctor odpala empiryczną sondę runtime whisper.cpp (probe_whisper=True; cache).
+    # doctor odpala empiryczne sondy runtime: whisper.cpp (probe_whisper) i enkodery FFmpeg
+    # (probe_encoders) — pokazuje, co REALNIE działa, nie co jest w buildzie. Obie cache'owane.
     report = detection.check_all(
         whispercpp_path=config.get_whispercpp_path(cfg),
         litellm_base_url=config.get_litellm_base_url(cfg),
@@ -50,6 +51,7 @@ def doctor(as_json: bool = typer.Option(False, "--json")) -> None:
         summary_model_local=config.get_summary_model_local(cfg),
         summary_model_cloud=config.get_summary_model_cloud(cfg),
         probe_whisper=True,
+        probe_encoders=True,
     )
     if as_json:
         import json
