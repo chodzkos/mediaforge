@@ -13,6 +13,8 @@ statusy transkrypcji/streszczenia).
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -135,17 +137,38 @@ def metadata_path(material_dir: Path) -> Path:
 
 
 def write_metadata(material_dir: Path, meta: MaterialMetadata) -> Path:
-    """Zapisuje ``metadata.json`` w folderze materiału (UTF-8, wcięcia, stabilny porządek)."""
+    """Zapisuje ``metadata.json`` ATOMOWO (UTF-8, wcięcia, stabilny porządek).
+
+    Źródło prawdy nie może się urwać w połowie: piszemy do pliku tymczasowego w TYM SAMYM
+    katalogu (ten sam filesystem → ``os.replace`` jest atomowy), a dopiero potem podmieniamy
+    docelowy. Przerwany zapis (crash / brak miejsca) zostawia stary, kompletny ``metadata.json``
+    zamiast obciętego. Przy błędzie sprzątamy tmp i propagujemy wyjątek.
+    """
     material_dir.mkdir(parents=True, exist_ok=True)
     path = metadata_path(material_dir)
-    path.write_text(
-        json.dumps(meta.to_dict(), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    payload = json.dumps(meta.to_dict(), ensure_ascii=False, indent=2) + "\n"
+    fd, tmp_name = tempfile.mkstemp(dir=material_dir, prefix=".metadata-", suffix=".json.tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.replace(tmp, path)  # atomowa podmiana (ten sam katalog/filesystem)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
     return path
 
 
 def read_metadata(material_dir: Path) -> MaterialMetadata:
-    """Wczytuje ``metadata.json`` z folderu materiału (źródło prawdy)."""
-    data = json.loads(metadata_path(material_dir).read_text(encoding="utf-8"))
+    """Wczytuje ``metadata.json`` z folderu materiału (źródło prawdy).
+
+    Uszkodzony JSON → czytelny ``ValueError`` ze ścieżką. Skan biblioteki
+    (:meth:`RecordingStore.rescan`) łapie go per-materiał i pomija ten materiał z logiem,
+    zamiast wywracać cały skan.
+    """
+    text = metadata_path(material_dir).read_text(encoding="utf-8")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Uszkodzony metadata.json w {material_dir}") from exc
     return MaterialMetadata.from_dict(data)
