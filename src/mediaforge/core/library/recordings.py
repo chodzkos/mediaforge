@@ -10,6 +10,7 @@ a :meth:`RecordingStore.to_metadata` czyta je z powrotem (round-trip folder ↔ 
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -31,6 +32,8 @@ from mediaforge.core.library.slides import (
     slide_from_dict,
     slide_to_dict,
 )
+
+logger = logging.getLogger("mediaforge")
 
 
 class RecordingStatus(StrEnum):
@@ -439,8 +442,11 @@ class RecordingStore:
                 continue
             try:
                 meta = read_metadata(child)
-            except (OSError, ValueError):
-                continue  # uszkodzony metadata.json — pomiń, nie wywalaj całego skanu
+            except (OSError, ValueError) as exc:
+                # Uszkodzony/nieczytelny metadata.json — raportujemy i pomijamy TEN materiał,
+                # nie wywalamy całego skanu (jeden zły folder nie kasuje indeksu reszty).
+                logger.warning("Nieczytelny metadata.json — pomijam materiał: %s (%s)", child, exc)
+                continue
             # Slajdy odtwarzamy z folderu ``slides/`` (źródło prawdy = dysk) — dołożony ręcznie
             # plik jest podłapywany; przy zmianie zapisujemy metadata.json (jak transkrypt).
             disk_slides = tuple(read_slides(child))

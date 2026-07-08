@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from mediaforge.core.library.db import Database
 from mediaforge.core.library.material import (
     MaterialMetadata,
@@ -116,6 +118,50 @@ def test_list_filters_by_tag_and_category(tmp_path: Path) -> None:
     assert [m.title for _, _f, m in store.list_materials(category="AI")] == ["B"]
     assert store.all_tags() == ["bgp", "llm", "tcp"]
     assert store.all_categories() == ["AI", "Sieci"]
+
+
+# ── Atomowy zapis + odporność na uszkodzony metadata.json ─────────────────────
+
+
+def test_leftover_tmp_does_not_break_read(tmp_path: Path) -> None:
+    """Śmieciowy plik tymczasowy po przerwanym zapisie nie psuje odczytu metadata.json."""
+    material_dir = tmp_path / "material"
+    write_metadata(material_dir, _meta())
+    # Symulacja niedokończonego atomowego zapisu: obcięty tmp obok metadata.json.
+    (material_dir / ".metadata-leftover.json.tmp").write_text("{ niedoko", encoding="utf-8")
+    assert read_metadata(material_dir) == _meta()  # czytamy WYŁĄCZNIE metadata.json
+
+
+def test_write_metadata_leaves_no_tmp_on_success(tmp_path: Path) -> None:
+    """Po udanym (atomowym) zapisie w folderze nie zostaje żaden plik ``.tmp``."""
+    material_dir = tmp_path / "material"
+    write_metadata(material_dir, _meta())
+    assert [p.name for p in material_dir.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_read_metadata_corrupt_json_raises_valueerror_with_path(tmp_path: Path) -> None:
+    """Uszkodzony metadata.json → czytelny ValueError ze ścieżką (skan łapie per-materiał)."""
+    material_dir = tmp_path / "material"
+    material_dir.mkdir()
+    (material_dir / "metadata.json").write_text("{ to nie jest JSON", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"Uszkodzony metadata\.json") as exc_info:
+        read_metadata(material_dir)
+    assert str(material_dir) in str(exc_info.value)  # ścieżka w komunikacie
+
+
+def test_rescan_skips_corrupt_material(tmp_path: Path) -> None:
+    """Uszkodzony metadata.json nie wywraca skanu — pozostałe materiały są indeksowane."""
+    lib = tmp_path / "lib"
+    write_metadata(lib / "Dobry", MaterialMetadata(title="Dobry", created_at="t"))
+    bad = lib / "Zly"
+    bad.mkdir(parents=True)
+    (bad / "metadata.json").write_text("{ uszkodzony", encoding="utf-8")
+
+    store = _store(tmp_path)
+    indexed = store.rescan(lib)
+
+    assert indexed == 1  # tylko dobry materiał; zły pominięty, skan nie padł
+    assert [m.title for _, _f, m in store.list_materials()] == ["Dobry"]
 
 
 def test_rescan_rebuilds_index_from_folders(tmp_path: Path) -> None:
