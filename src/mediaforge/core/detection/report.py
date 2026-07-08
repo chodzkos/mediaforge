@@ -36,12 +36,16 @@ def check_all(
     summary_model_cloud: str | None = None,
     *,
     probe_whisper: bool = False,
+    probe_encoders: bool = False,
 ) -> dict[str, Any]:
     """Zbiorczy raport jako DANE — komenda `doctor` (render_report) i status bar GUI.
 
     Override przekazywane z wiringu (z core/config): `whispercpp_path`, `litellm_base_url`,
     `whisper_model`. ``probe_whisper`` (tylko doctor) odpala empiryczną sondę runtime
     whisper.cpp (ładuje model ~1-2 s, cache) — status bar jej nie woła, żeby nie zamarzał.
+    ``probe_encoders`` odpala empiryczną sondę enkoderów FFmpeg (:func:`tools.probe_encoder`,
+    ~0,5 s/enkoder, cache) — doctor i sonda środowiska GUI (w tle) ją włączają, bo wybór
+    enkodera nagrania musi znać realną używalność, nie tylko obecność w buildzie.
     """
     gpu_raw = hardware.check_gpu()
     arch = hardware.resolved_arch(gpu_raw)
@@ -64,7 +68,7 @@ def check_all(
             "platform": platform.platform(),
             "python": platform.python_version(),
         },
-        "ffmpeg": tools.check_ffmpeg(),
+        "ffmpeg": tools.check_ffmpeg(probe_encoders=probe_encoders),
         "whispercpp": wh,
         "ytdlp": tools.check_ytdlp(),
         "gpu": {**gpu_raw, "arch": arch.value},  # wzbogacenie o arch dla wyświetlania
@@ -127,10 +131,28 @@ def render_report(report: dict[str, Any]) -> str:
 
     ff = report.get("ffmpeg", {})
     enc = ff.get("encoders", {})
-    enc_str = ", ".join(f"{n} {_mark(v)}" for n, v in enc.items()) if enc else "-"
+    usable = ff.get("encoders_usable", {})
+    # ✓/✗ = REALNA używalność (usable) tam, gdzie ją zmierzono; bez sondy spada na build-presence,
+    # żeby nie straszyć „✗" bez danych. Enkodery w buildzie a martwe w runtime → osobny hint niżej.
+    broken: list[str] = []
+    marks: list[str] = []
+    for name, in_build in enc.items():
+        if in_build and not usable.get(name, in_build):
+            broken.append(name)
+            marks.append(f"{name} ✗")
+        elif in_build:
+            marks.append(f"{name} ✓")
+        else:
+            marks.append(f"{name} ✗")
+    enc_str = ", ".join(marks) if marks else "-"
     ff_av = _mark(ff.get("available", False))
     lines.append(f"FFmpeg:      {ff_av} {ff.get('version', '')}".rstrip())
     lines.append(f"             enkodery: {enc_str}")
+    for name in broken:
+        lines.append(
+            f"             → {name}: jest w buildzie, nie działa w runtime — sprawdź "
+            f"sterownik NVIDIA (FFmpeg 8.x wymaga ≥610)"
+        )
     if not ff.get("available", False):
         lines.append(f"             → {_HINTS['ffmpeg']}")
 

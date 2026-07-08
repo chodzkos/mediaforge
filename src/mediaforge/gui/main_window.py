@@ -65,9 +65,13 @@ class _EnvironmentProbe(QRunnable):
         self._litellm_base_url = litellm_base_url
 
     def run(self) -> None:
+        # probe_encoders=True: wybór enkodera nagrania (RecordDialog) musi znać realną
+        # używalność, nie tylko obecność w buildzie (NVENC-widmo → cichy zgon nagrania).
+        # Bezpiecznie tu, bo cała sonda i tak biegnie w puli wątków, poza wątkiem UI.
         report = detection.check_all(
             whispercpp_path=self._whispercpp_path,
             litellm_base_url=self._litellm_base_url,
+            probe_encoders=True,
         )
         self._signals.report_ready.emit(report)
 

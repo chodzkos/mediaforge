@@ -22,12 +22,16 @@ from __future__ import annotations
 import shutil
 import subprocess
 from collections.abc import Callable
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from mediaforge.core.winutil import NO_WINDOW_FLAGS
 
 _TIMEOUT = 5
+# Sonda enkodera koduje 1 klatkę — zwykle ~0,5 s, ale zimny NVENC/ładowanie sterownika bywa
+# wolniejsze; 15 s to bezpieczny sufit (i tak wołane w tle / w doctorze, nie na wątku UI).
+_ENCODER_PROBE_TIMEOUT = 15
 
 
 def _run(cmd: list[str], timeout: int = _TIMEOUT) -> str:
@@ -42,6 +46,55 @@ def _run(cmd: list[str], timeout: int = _TIMEOUT) -> str:
         return proc.stdout or proc.stderr or ""
     except Exception:
         return ""
+
+
+def _run_returncode(cmd: list[str], timeout: int) -> int:
+    """Uruchamia komendę i zwraca kod wyjścia (127 = nie udało się uruchomić / timeout)."""
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            creationflags=NO_WINDOW_FLAGS,
+        )
+        return proc.returncode
+    except Exception:
+        return 127
+
+
+def _encoder_probe_cmd(name: str, ffmpeg: str) -> list[str]:
+    """Komenda kodująca 1 klatkę ``testsrc`` do ``null`` — próba REALNEJ inicjalizacji enkodera."""
+    return [
+        ffmpeg,
+        "-hide_banner",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=duration=0.1:size=64x64:rate=30",
+        "-frames:v",
+        "1",
+        "-c:v",
+        name,
+        "-f",
+        "null",
+        "-",
+    ]
+
+
+@lru_cache(maxsize=32)
+def probe_encoder(name: str, ffmpeg: str = "ffmpeg") -> bool:
+    """Empiryczna sonda: czy enkoder REALNIE inicjalizuje się w runtime (nie tylko jest w buildzie).
+
+    Listing ``ffmpeg -encoders`` mówi tylko, że enkoder wkompilowano — inicjalizacja może paść:
+    za stary sterownik (FFmpeg 8.x wymaga NVIDIA ≥610) albo brak wsparcia w krzemie (``av1_nvenc``
+    na Pascalu). Kodujemy jedną klatkę ``testsrc`` do ``null`` i patrzymy na kod wyjścia — ta sama
+    filozofia co :func:`core.ai.transcribe.detect_whisper_runtime`: EMPIRYKA zamiast progów.
+
+    Wynik cache'owany (``lru_cache``): sonda ~0,5 s/enkoder, a odpowiedź jest stała w obrębie
+    procesu (sprzęt/sterownik się nie zmienia). Testy czyszczą cache przez ``cache_clear()``.
+    """
+    return _run_returncode(_encoder_probe_cmd(name, ffmpeg), _ENCODER_PROBE_TIMEOUT) == 0
 
 
 # ───────────── Prymitywy generyczne (→ chodzkos-detection) ─────────────
@@ -94,15 +147,32 @@ def _ffmpeg_version(out: str) -> str:
     return parts[2] if len(parts) > 2 else ""
 
 
-def check_ffmpeg() -> dict[str, Any]:
-    """ffmpeg: kontrakt probe_tool + warstwa mediaforge (enkodery NVENC/x264/x265 OBOK)."""
+def check_ffmpeg(
+    *, probe_encoders: bool = False, probe: Callable[[str], bool] | None = None
+) -> dict[str, Any]:
+    """ffmpeg: kontrakt probe_tool + warstwa mediaforge (enkodery NVENC/x264/x265 OBOK).
+
+    ``encoders`` = obecność w BUILDZIE (listing ``-encoders``). ``encoders_usable`` = REALNA
+    inicjalizacja w runtime (:func:`probe_encoder`) — enkoder w buildzie może paść (za stary
+    sterownik NVIDIA, brak wsparcia w krzemie); wybór enkodera nagrania musi patrzeć na usable,
+    nie na build (inaczej NVENC-widmo zabija nagranie zamiast zejść na libx264).
+
+    Sonda runtime (``probe_encoders=True``) jest kosztowna (~0,5 s/enkoder), więc leniwa: doctor
+    ją włącza, GUI woła ją w tle (sonda środowiska poza wątkiem UI). Bez niej ``encoders_usable``
+    jest puste, a wołający spada na build-presence. ``probe`` = wstrzykiwana sonda (seam testów).
+    """
     tool = probe_tool("ffmpeg", ["-hide_banner", "-version"], _ffmpeg_version)
     encoders: dict[str, bool] = {}
+    encoders_usable: dict[str, bool] = {}
     if tool["available"]:
         enc = _run(["ffmpeg", "-hide_banner", "-encoders"])
         for name in ("h264_nvenc", "hevc_nvenc", "av1_nvenc", "libx264", "libx265"):
             encoders[name] = name in enc
-    return {**tool, "encoders": encoders}
+        if probe_encoders:
+            probe_fn = probe if probe is not None else probe_encoder
+            # Sonda TYLKO dla enkoderów obecnych w buildzie (nieobecnego nie ma po co próbować).
+            encoders_usable = {n: probe_fn(n) for n, present in encoders.items() if present}
+    return {**tool, "encoders": encoders, "encoders_usable": encoders_usable}
 
 
 def check_whispercpp(

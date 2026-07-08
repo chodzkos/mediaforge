@@ -274,8 +274,12 @@ class RecordDialog(QDialog):
         # Wynik ffmpeg podaje okno główne z cache raportu startowego (bez drugiej sondy). Fallback
         # (sonda synchroniczna) tylko, gdy nie podano — np. przy samodzielnej konstrukcji/w CLI.
         ffmpeg = ffmpeg_probe if ffmpeg_probe is not None else check_ffmpeg()
+        # Enkodery do wyboru: REALNA używalność (encoders_usable — sonda runtime z raportu
+        # startowego, M21), nie sama obecność w buildzie — inaczej NVENC-widmo (w buildzie,
+        # martwy przy inicjalizacji: za stary sterownik, brak wsparcia arch) zabija nagranie
+        # zamiast zejść na libx264. Fallback na build tylko, gdy sondy nie było (stary raport).
         self._engine = RecorderEngine(
-            encoders=ffmpeg.get("encoders", {}),
+            encoders=ffmpeg.get("encoders_usable") or ffmpeg.get("encoders", {}),
             store=RecordingStore(cfg_mod.library_db_path()),
         )
         self._session: RecorderSession | None = None

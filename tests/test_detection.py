@@ -147,3 +147,84 @@ def test_status_line_no_cuda() -> None:
     line = report.status_line({"gpu": {"available": False}, "compute": {"tier": "C"}})
     assert "CUDA: brak" in line
     assert "Tier: C" in line
+
+
+# ── M21: sonda używalności enkoderów w runtime (nie tylko obecność w buildzie) ─────
+
+
+def test_probe_encoder_reads_runtime_returncode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sonda rozstrzyga po kodzie wyjścia realnego kodowania testsrc, nie po liście buildu."""
+    calls: list[list[str]] = []
+
+    def _rc(cmd: list[str], timeout: int) -> int:
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(tools, "_run_returncode", _rc)
+    tools.probe_encoder.cache_clear()
+    assert tools.probe_encoder("libx264") is True
+    # Komenda to jednoklatkowe kodowanie testsrc z żądanym enkoderem do null.
+    assert calls and calls[0][calls[0].index("-c:v") + 1] == "libx264"
+
+    monkeypatch.setattr(tools, "_run_returncode", lambda cmd, timeout: -40)
+    tools.probe_encoder.cache_clear()
+    assert tools.probe_encoder("hevc_nvenc") is False
+    tools.probe_encoder.cache_clear()  # nie zostawiaj zaślepki w cache dla innych testów
+
+
+def test_check_ffmpeg_usable_probes_only_build_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """encoders_usable powstaje z sondy runtime TYLKO dla enkoderów obecnych w buildzie."""
+    monkeypatch.setattr(
+        tools,
+        "probe_tool",
+        lambda *a, **k: {"available": True, "version": "8.1", "path": Path("ffmpeg")},
+    )
+    # Listing -encoders: hevc_nvenc + libx264 obecne; h264_nvenc/av1_nvenc/libx265 nieobecne.
+    monkeypatch.setattr(tools, "_run", lambda *a, **k: "V..... hevc_nvenc x\nV..... libx264 y\n")
+    probed: list[str] = []
+
+    def _probe(name: str) -> bool:
+        probed.append(name)
+        return name == "libx264"  # NVENC w buildzie, ale martwy w runtime
+
+    result = tools.check_ffmpeg(probe_encoders=True, probe=_probe)
+
+    assert result["encoders"]["hevc_nvenc"] is True  # build: obecny
+    assert result["encoders"]["av1_nvenc"] is False  # build: brak
+    assert set(probed) == {"hevc_nvenc", "libx264"}  # sonda TYLKO dla obecnych w buildzie
+    assert set(result["encoders_usable"]) == {"hevc_nvenc", "libx264"}
+    assert result["encoders_usable"]["hevc_nvenc"] is False  # runtime: martwy → nie do wyboru
+    assert result["encoders_usable"]["libx264"] is True
+
+
+def test_check_ffmpeg_without_probe_leaves_usable_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bez probe_encoders sonda runtime nie biegnie (status bar/testy nie ruszają ffmpeg)."""
+    monkeypatch.setattr(
+        tools,
+        "probe_tool",
+        lambda *a, **k: {"available": True, "version": "8.1", "path": Path("ffmpeg")},
+    )
+    monkeypatch.setattr(tools, "_run", lambda *a, **k: "V..... libx264 y\n")
+
+    def _boom(name: str) -> bool:
+        raise AssertionError("sonda nie powinna ruszyć bez probe_encoders")
+
+    result = tools.check_ffmpeg(probe=_boom)  # probe_encoders domyślnie False
+    assert result["encoders"]["libx264"] is True
+    assert result["encoders_usable"] == {}
+
+
+def test_render_report_marks_build_but_unusable_encoder() -> None:
+    """Enkoder w buildzie a martwy w runtime → ✗ + hint runtime; usable=True → ✓."""
+    rep = {
+        "ffmpeg": {
+            "available": True,
+            "version": "8.1",
+            "encoders": {"hevc_nvenc": True, "libx264": True},
+            "encoders_usable": {"hevc_nvenc": False, "libx264": True},
+        },
+    }
+    text = report.render_report(rep)
+    assert "hevc_nvenc ✗" in text
+    assert "libx264 ✓" in text
+    assert "nie działa w runtime" in text  # rozróżnienie build vs runtime w doktorze
