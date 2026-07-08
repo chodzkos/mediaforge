@@ -34,7 +34,7 @@ transcribe-ct2 = [
     "faster-whisper>=1.0",
 ]
 search = [
-    "sqlite-utils>=3.36",    # wygodna obsługa FTS5
+    "sqlite-utils>=4.0",    # wygodna obsługa FTS5
     # baza wektorowa do semantic search dobrana na etapie S7 (LanceDB/Chroma/Qdrant)
 ]
 dev = [
