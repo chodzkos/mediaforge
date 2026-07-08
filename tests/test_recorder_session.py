@@ -302,6 +302,37 @@ def test_engine_acquire_creates_library_entry(tmp_path: Path) -> None:
     assert recordings[0].status is RecordingStatus.RECORDED
 
 
+def test_acquire_twice_does_not_reuse_folder(tmp_path: Path) -> None:
+    """Dwa kolejne acquire do tego samego output_dir → DWA foldery; plik pierwszego przeżywa drugi.
+
+    Regresja na utratę danych: dawniej work_dir == folder materiału i stała nazwa „nagranie", więc
+    drugie nagranie nadpisywało pierwsze. Teraz work_dir_for → podkatalog _work + next_free_title.
+    """
+    db_path = tmp_path / "library.sqlite3"
+    Database(db_path).migrate()
+    store = RecordingStore(db_path)
+    out = tmp_path / "out"
+    engine = RecorderEngine(
+        encoders=_ENCODERS,
+        store=store,
+        process_factory=_fake_factory([]),
+        concat_runner=_fake_concat([]),
+    )
+    opts = AcquireOptions(quality=PRESETS["standard"], output_dir=out)
+    src = EngineSource(kind=SourceKind.SCREEN, target="desktop")
+
+    engine.acquire(src, opts, lambda _f, _m: None, max_seconds=0.0)
+    first = out / "nagranie" / "nagranie.mkv"
+    assert first.is_file() and first.read_bytes() == b"FINAL"
+
+    engine.acquire(src, opts, lambda _f, _m: None, max_seconds=0.0)
+    second = out / "nagranie (2)" / "nagranie (2).mkv"
+    assert second.is_file()
+    # KLUCZOWE: drugie nagranie NIE nadpisało pierwszego — osobne foldery, plik pierwszego trwa.
+    assert first.is_file() and first.read_bytes() == b"FINAL"
+    assert len(store.list_recordings(RecordingStatus.RECORDED)) == 2
+
+
 def test_engine_can_handle_only_screen() -> None:
     engine = RecorderEngine(encoders=_ENCODERS)
     assert engine.can_handle(EngineSource(kind=SourceKind.SCREEN, target="desktop")) is True

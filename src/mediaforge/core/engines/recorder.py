@@ -151,6 +151,16 @@ def material_dir_for(output_dir: Path, title: str) -> Path:
     return output_dir / safe_filename(title)
 
 
+def work_dir_for(output_dir: Path, title: str) -> Path:
+    """Katalog roboczy nagrania: podkatalog ``_work`` w folderze materiału — JEDNO źródło konwencji.
+
+    Segmenty muszą trafiać do podkatalogu, NIE do samego folderu materiału: finalize sklei je do
+    ``<material>/<slug>.<ext>`` obok ``_work``. Gdyby ``work_dir`` == folder materiału, segmenty i
+    plik wynikowy mieszałyby się, a kolejne nagranie nadpisałoby folder (utrata danych).
+    """
+    return material_dir_for(output_dir, title) / "_work"
+
+
 def material_exists(output_dir: Path, title: str) -> bool:
     """Czy materiał o tej nazwie już istnieje (folder z ``metadata.json`` = ukończony materiał)."""
     return (material_dir_for(output_dir, title) / "metadata.json").is_file()
@@ -484,12 +494,13 @@ class RecorderEngine:
         """
         capture = CaptureSource(mode=CaptureMode.FULLSCREEN)
         audio = AudioConfig(system_audio=True)
-        work_dir = opts.output_dir / safe_filename("nagranie")
+        # Ochrona kolizji jak w GUI: kolejne nagranie idzie do „nagranie (2)", nie nadpisuje.
+        title = next_free_title(opts.output_dir, "nagranie")
         session = self.new_session(
             source=capture,
             audio=audio,
             quality=opts.quality,
-            work_dir=work_dir,
+            work_dir=work_dir_for(opts.output_dir, title),  # podkatalog _work, nie folder materiału
         )
         session.start()
         progress(0.0, "Nagrywanie rozpoczęte")
@@ -502,6 +513,6 @@ class RecorderEngine:
             time.sleep(0.1)
         session.stop()
         progress(0.95, "Składanie segmentów")
-        artifact = self.finalize_to_library(session, title="nagranie", output_dir=opts.output_dir)
+        artifact = self.finalize_to_library(session, title=title, output_dir=opts.output_dir)
         progress(1.0, "Zakończono")
         return artifact

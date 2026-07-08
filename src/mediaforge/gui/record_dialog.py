@@ -54,7 +54,7 @@ from mediaforge.core.engines.recorder import (
     discard_material_dir,
     material_exists,
     next_free_title,
-    safe_filename,
+    work_dir_for,
 )
 from mediaforge.core.library.db import Database
 from mediaforge.core.library.recordings import RecordingStore, is_inside_library
@@ -591,7 +591,7 @@ class RecordDialog(QDialog):
                 title = new_name or next_free_title(out_dir, title)
                 self._title_edit.setText(title)
 
-        work_dir = out_dir / safe_filename(title) / "_work"
+        work_dir = work_dir_for(out_dir, title)  # jedno źródło konwencji (podkatalog _work)
         try:
             # Walidacja regionu w GUI — nie puszczamy poza-zakresowego crop do ffmpeg.
             source = self._build_capture_source()
