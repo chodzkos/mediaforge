@@ -13,6 +13,7 @@ from mediaforge.core.ai.summarize import SummaryClient, SummaryConfig
 from mediaforge.core.ai.transcribe import (
     TranscribeOptions,
     Transcript,
+    TranscriptionError,
     TranscriptionResult,
 )
 from mediaforge.core.engines.import_engine import ImporterEngine
@@ -143,6 +144,42 @@ def test_transcribe_does_not_reset_other_material(tmp_path: Path) -> None:
 
     other = store.get_material(b_id)
     assert other is not None and other[1].transcript_status == "none"  # nietknięty
+
+
+class _FailingBackend:
+    """Backend-atrapa: symuluje nieudaną transkrypcję (ffmpeg/whisper-cli) rzucając wyjątek."""
+
+    name = "failing"
+
+    def transcribe(
+        self,
+        source: Path,
+        out_dir: Path,
+        opts: TranscribeOptions,
+        *,
+        on_progress: Callable[[int], None] | None = None,
+    ) -> TranscriptionResult:
+        raise TranscriptionError(f"whisper-cli nie wytworzył transkryptu ({source}): boom")
+
+
+def test_transcribe_job_failed_when_backend_raises(tmp_path: Path) -> None:
+    """Backend rzuca TranscriptionError → job FAILED z komunikatem; status materiału bez zmian."""
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, folder = _seed_material(store, tmp_path / "lib", "Wyklad")
+
+    queue = JobQueue(JobStore(db), lanes={JOB_TRANSCRIBE: 1})
+    queue.register(JOB_TRANSCRIBE, make_transcribe_handler(store, _FailingBackend()))
+    job_id = JobStore(db).enqueue(JOB_TRANSCRIBE, recording_id=rec_id, max_retries=0)
+
+    queue.process_pending()
+    failed = JobStore(db).get(job_id)
+    assert failed is not None and failed.status is JobStatus.FAILED
+    assert failed.error_message and "whisper-cli nie wytworzył transkryptu" in failed.error_message
+    # transcript_status materiału pozostaje „none" (nie zapisano „done").
+    material = store.get_material(rec_id)
+    assert material is not None and material[1].transcript_status == "none"
+    assert read_metadata(folder).transcript_status == "none"
 
 
 def test_transcribe_job_fails_for_material_without_folder(tmp_path: Path) -> None:

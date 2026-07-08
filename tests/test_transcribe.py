@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from mediaforge.core.ai.transcribe import (
     LineCb,
     RunResult,
     TranscribeOptions,
+    TranscriptionError,
     WhisperCppBackend,
     build_silence_wav_command,
     build_whisper_command,
@@ -105,7 +108,8 @@ def test_whispercpp_backend_orchestration(tmp_path: Path) -> None:
             Path(prefix + ".json").write_text(json.dumps(_SAMPLE_JSON), encoding="utf-8")
             Path(prefix + ".srt").write_text("1\n", encoding="utf-8")
             return RunResult(0, _CUDA_LOG)
-        return RunResult(0, "")  # konwersja WAV
+        Path(cmd[-1]).write_bytes(b"RIFF")  # konwersja WAV → utwórz plik audio
+        return RunResult(0, "")
 
     backend = WhisperCppBackend(model="/m/medium.bin", runner=fake_runner)
     result = backend.transcribe(src, out_dir, TranscribeOptions(language="pl"))
@@ -118,6 +122,51 @@ def test_whispercpp_backend_orchestration(tmp_path: Path) -> None:
     # Najpierw konwersja do WAV, potem whisper z --output-json.
     assert any("pcm_s16le" in c for c in commands)
     assert any("--output-json" in c for c in commands)
+
+
+# ── Głośna porażka (nie „done" po cichu) ──────────────────────────────────────
+
+
+def test_transcribe_raises_when_ffmpeg_fails(tmp_path: Path) -> None:
+    """ffmpeg returncode != 0 (brak WAV) → TranscriptionError, nie cichy „done"."""
+    src = tmp_path / "lecture.mp4"
+    src.write_bytes(b"x")
+
+    def failing_runner(cmd: list[str], on_line: LineCb | None = None) -> RunResult:
+        return RunResult(1, "linia\nffmpeg: Invalid data found when processing input\n")
+
+    backend = WhisperCppBackend(model="/m/medium.bin", runner=failing_runner)
+    with pytest.raises(TranscriptionError, match="ffmpeg nie przygotował audio"):
+        backend.transcribe(src, tmp_path / "material", TranscribeOptions())
+
+
+def test_transcribe_raises_when_whisper_makes_no_json(tmp_path: Path) -> None:
+    """whisper-cli returncode 0, ale brak pliku .json → TranscriptionError."""
+    src = tmp_path / "lecture.mp4"
+    src.write_bytes(b"x")
+
+    def fake_runner(cmd: list[str], on_line: LineCb | None = None) -> RunResult:
+        if "-of" not in cmd:  # konwersja WAV OK
+            Path(cmd[-1]).write_bytes(b"RIFF")
+            return RunResult(0, "")
+        return RunResult(0, _CUDA_LOG)  # whisper „udany", ale nie zapisał .json
+
+    backend = WhisperCppBackend(model="/m/medium.bin", runner=fake_runner)
+    with pytest.raises(TranscriptionError, match="whisper-cli nie wytworzył transkryptu"):
+        backend.transcribe(src, tmp_path / "material", TranscribeOptions())
+
+
+def test_transcribe_raises_on_empty_model_without_running(tmp_path: Path) -> None:
+    """Pusty model → jednoznaczny TranscriptionError PRZED odpaleniem runnera."""
+    src = tmp_path / "lecture.mp4"
+    src.write_bytes(b"x")
+
+    def boom(cmd: list[str], on_line: LineCb | None = None) -> RunResult:
+        raise AssertionError("runner nie powinien być wołany bez modelu")
+
+    backend = WhisperCppBackend(model="", runner=boom)
+    with pytest.raises(TranscriptionError, match="nie skonfigurowano modelu whisper"):
+        backend.transcribe(src, tmp_path / "material", TranscribeOptions())
 
 
 # ── Empiryczna sonda runtime (doctor) ─────────────────────────────────────────
@@ -198,7 +247,8 @@ def test_backend_streams_progress_with_throttle(tmp_path: Path) -> None:
 
     def fake_runner(cmd: list[str], on_line: LineCb | None = None) -> RunResult:
         if "-of" not in cmd:
-            return RunResult(0, "")  # konwersja WAV
+            Path(cmd[-1]).write_bytes(b"RIFF")  # konwersja WAV → utwórz plik audio
+            return RunResult(0, "")
         full = "".join(progress_lines)
         if on_line is not None:
             for line in progress_lines:
