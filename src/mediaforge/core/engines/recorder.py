@@ -450,6 +450,11 @@ class RecorderEngine:
                 f"segmenty zostają w {session.work_dir}"
             )
 
+        # Sukces potwierdzony (plik istnieje, size>0) → segmenty w ``_work`` są już redundantne.
+        # KLUCZOWE: sprzątamy DOPIERO po weryfikacji concat; przy jakimkolwiek błędzie wcześniej
+        # ``_work`` zostaje nietknięty (ręczny odzysk). ``plan.segments`` to już policzona lista.
+        shutil.rmtree(session.work_dir, ignore_errors=True)
+
         is_audio = session.quality.audio_only
         video_path = None if is_audio else output
         audio_path = output if is_audio else None

@@ -378,10 +378,17 @@ class WhisperCppBackend:
             )
 
         transcript = Transcript(language=language, model=model_name)
+        parsed = False
         with contextlib.suppress(OSError, ValueError):
             transcript = parse_whisper_json(
                 json.loads(json_path.read_text(encoding="utf-8")), model=model_name
             )
+            parsed = True
+        if parsed:
+            # Półprodukt WAV (16 kHz mono) jest zbędny po udanym transkrypcie — kasujemy. Przy
+            # błędzie parsowania zostaje obok .json/.srt do diagnostyki.
+            with contextlib.suppress(OSError):
+                wav.unlink()
         return TranscriptionResult(
             transcript=transcript,
             runtime=runtime,
