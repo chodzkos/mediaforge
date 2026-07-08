@@ -152,12 +152,29 @@ class JobQueue:
         self._thread = threading.Thread(target=_loop, name="mediaforge-jobs", daemon=True)
         self._thread.start()
 
-    def stop(self, timeout: float = 5.0) -> None:
-        """Zatrzymuje dispatcher i czeka na zakończenie wątku."""
+    def stop(self, timeout: float = 30.0, *, cancel_pending_claims: bool = False) -> bool:
+        """Zatrzymuje dispatcher i czeka (do ``timeout`` s) na domknięcie bieżących zadań.
+
+        Dłuższy domyślny timeout (30 s) daje trwającemu handlerowi (np. whisper-cli zapisujący
+        .json/.srt) szansę skończyć, zamiast ucinać go w pół. Wątek jest daemonem — po timeout
+        jest porzucany, a zadanie ``running`` odzyskuje przy następnym starcie
+        :meth:`JobStore.recover_stale`. Zwraca ``True``, gdy wątek roboczy domknął się w limicie,
+        ``False`` po timeout (zadania nadal w toku).
+
+        ``cancel_pending_claims`` na razie NIE anuluje niczego.
+        TODO: kooperatywne przerywanie bieżących zadań — whisper-cli nie ma stopu przez ten
+        runner (subprocess bez sygnału przerwania), więc wymagałoby zabicia procesu potomnego.
+        Do zrobienia, gdy runner zacznie eksponować uchwyt procesu; wtedy flaga tnie trwające
+        zadania zamiast czekać na ich naturalne domknięcie.
+        """
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout)
-            self._thread = None
+        thread = self._thread
+        if thread is None:
+            return True
+        thread.join(timeout)
+        drained = not thread.is_alive()
+        self._thread = None
+        return drained
 
     def pending_count(self) -> int:
         """Liczba zadań oczekujących (do paska statusu)."""

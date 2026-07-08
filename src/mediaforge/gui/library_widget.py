@@ -137,14 +137,25 @@ class LibraryWidget(QWidget):
     # ── Cykl życia kolejki (start z okna głównego; nie w testach) ─────────────
 
     def start_jobs(self) -> None:
-        """Uruchamia wątek roboczy kolejki i polling statusów (woła okno główne)."""
+        """Uruchamia wątek roboczy kolejki i polling statusów (woła okno główne).
+
+        Najpierw odzysk: zadania ``running`` przerwane poprzednim zamknięciem/awarią wracają
+        do kolejki ZANIM ruszy dispatcher (inaczej zostałyby ``running`` na zawsze).
+        """
+        recovered = self._jobs_store.recover_stale()
+        if recovered > 0:
+            self._log.append_line(f"Przywrócono {recovered} przerwanych zadań do kolejki", "info")
         self._queue.start()
         self._poll.start()
 
-    def shutdown(self) -> None:
-        """Zatrzymuje polling i wątek roboczy (woła closeEvent okna głównego)."""
+    def shutdown(self) -> bool:
+        """Zatrzymuje polling i wątek roboczy (woła closeEvent okna głównego).
+
+        Zwraca ``False``, gdy zadania w toku nie domknęły się w limicie ``stop()`` — wtedy okno
+        główne wpisuje ostrzeżenie (zadania odzyskają się przy następnym starcie).
+        """
         self._poll.stop()
-        self._queue.stop()
+        return self._queue.stop()
 
     # ── Budowa UI ─────────────────────────────────────────────────────────────
 

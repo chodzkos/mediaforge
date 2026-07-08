@@ -176,8 +176,17 @@ class MainWindow(QMainWindow):
         self._library.start_jobs()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Zapisuje geometrię okna, domyka kolejkę i config przed zamknięciem."""
-        self._library.shutdown()  # zatrzymaj polling + wątek roboczy kolejki
+        """Zapisuje geometrię okna, domyka kolejkę i config przed zamknięciem.
+
+        Nie blokujemy zamknięcia dłużej niż ``stop()`` (do 30 s na domknięcie bieżących zadań);
+        gdy nie zdążą, wpisujemy ostrzeżenie — zadania ``running`` odzyskają się przy następnym
+        starcie (:meth:`JobStore.recover_stale`), więc nic nie ginie.
+        """
+        drained = self._library.shutdown()  # zatrzymaj polling + wątek roboczy kolejki
+        if not drained:
+            self._log.append_line(
+                "Zadania w toku zostaną przywrócone przy następnym starcie", "warn"
+            )
         geometry = bytes(self.saveGeometry().toBase64().data()).decode("ascii")
         cfg_mod.set_window_geometry(self._config, geometry)
         self._config.save_now()  # zamknięcie = zapis bezwarunkowy (omija debounce)
