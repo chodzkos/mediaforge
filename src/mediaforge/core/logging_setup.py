@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import TracebackType
@@ -59,6 +60,9 @@ def setup_logging(level: int = logging.INFO) -> Path:
 def install_excepthook() -> None:
     """Przekierowuje nieobsłużone wyjątki do logu (zamiast cichego zniknięcia).
 
+    Obejmuje główny wątek (``sys.excepthook``) ORAZ wątki robocze (``threading.excepthook``:
+    dyspozytor kolejki jobs, sondy ``QThreadPool`` z M9, worker stop+concat z M7) — bez tego
+    drugiego wyjątek w ``Thread.run`` omija hook głównego wątku i znika z logu.
     ``KeyboardInterrupt`` przepuszczamy do domyślnej obsługi (czysty Ctrl+C).
     """
     previous = sys.excepthook
@@ -75,3 +79,23 @@ def install_excepthook() -> None:
         previous(exc_type, exc, tb)
 
     sys.excepthook = _hook
+
+    previous_thread = threading.excepthook
+
+    def _thread_hook(args: threading.ExceptHookArgs) -> None:
+        if issubclass(args.exc_type, KeyboardInterrupt):
+            previous_thread(args)  # spójnie z hookiem głównym: czysty Ctrl+C nie idzie do logu
+            return
+        thread_name = args.thread.name if args.thread is not None else "?"
+        if args.exc_value is not None:
+            logger.critical(
+                "Nieobsłużony wyjątek w wątku %s",
+                thread_name,
+                exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+            )
+        else:
+            # exc_value bywa None przy zamykaniu interpretera — logujemy bez tracebacku.
+            logger.critical("Nieobsłużony wyjątek w wątku %s (bez szczegółów)", thread_name)
+        previous_thread(args)  # zachowaj domyślną diagnostykę (traceback na stderr)
+
+    threading.excepthook = _thread_hook
