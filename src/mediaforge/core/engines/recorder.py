@@ -350,16 +350,18 @@ class RecorderSession:
 
     # ── Finalizacja ─────────────────────────────────────────────────────────────
 
-    def finalize(self, output: Path) -> segments.RecoveryResult:
-        """Skleja ważne segmenty w ``output`` (concat). Zwraca wynik odzysku.
+    def finalize(self, output: Path) -> tuple[segments.RecoveryResult, int | None]:
+        """Skleja ważne segmenty w ``output`` (concat). Zwraca (plan odzysku, kod wyjścia concat).
 
         Bezpieczne także po crashu: opiera się o segmenty na dysku, nie o stan procesu.
-        Uruchamia FFmpeg concat tylko, gdy jest cokolwiek do sklejenia.
+        Uruchamia FFmpeg concat tylko, gdy jest cokolwiek do sklejenia — inaczej kod wyjścia
+        to ``None`` (concat nie ruszył). Kod wyjścia pozwala wołającemu odróżnić porażkę sklejania.
         """
         plan = segments.plan_recovery(self.work_dir, output, ffmpeg="ffmpeg")
+        returncode: int | None = None
         if plan.recoverable:
-            self._concat_runner(plan.command)
-        return plan
+            returncode = self._concat_runner(plan.command)
+        return plan, returncode
 
 
 @dataclass(slots=True)
@@ -417,12 +419,29 @@ class RecorderEngine:
 
         Folder materiału = ``output_dir/<bezpieczna-nazwa>``; plik wynikowy w środku.
         Zwraca :class:`MediaArtifact` z metadanymi (czas trwania, liczba segmentów).
+
+        Nie tworzy wpisu (ani ``metadata.json``, ani wiersza SQLite) bez realnego pliku wynikowego:
+        brak ważnych segmentów lub nieudane sklejanie → :class:`RuntimeError`. Segmenty w ``_work``
+        zostają nietknięte do ręcznego odzysku.
         """
         slug = safe_filename(title)
         material_dir = output_dir / slug
         material_dir.mkdir(parents=True, exist_ok=True)
         output = material_dir / f"{slug}.{session.container}"
-        plan = session.finalize(output)
+        plan, concat_rc = session.finalize(output)
+
+        # Brak ważnych segmentów → nie ma czego zapisywać (nie piszemy metadata.json ani upsert).
+        if not plan.recoverable:
+            raise RuntimeError(
+                "Brak ważnych segmentów — nagranie nie zostało zapisane (sprawdź log FFmpeg)."
+            )
+        # Concat ruszył, ale plik wynikowy nie powstał / jest pusty → porażka sklejania.
+        # Segmenty zostają w _work do ręcznego odzysku; nie tworzymy wpisu w bibliotece.
+        if not (output.is_file() and output.stat().st_size > 0):
+            raise RuntimeError(
+                f"Sklejanie segmentów nie powiodło się (kod wyjścia concat: {concat_rc}) — "
+                f"segmenty zostają w {session.work_dir}"
+            )
 
         is_audio = session.quality.audio_only
         video_path = None if is_audio else output
