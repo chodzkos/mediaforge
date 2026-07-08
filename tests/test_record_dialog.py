@@ -37,6 +37,14 @@ def _fake_concat(command: list[str]) -> int:
     return 0
 
 
+def _stop_and_wait(dialog: rd.RecordDialog, qtbot: QtBot) -> None:
+    """Woła _on_stop() (stop+concat na wątku roboczym) i czeka aż wątek się domknie."""
+    dialog._on_stop()
+    qtbot.waitUntil(
+        lambda: not dialog._finalizing and dialog._finalize_thread is None, timeout=5000
+    )
+
+
 @pytest.fixture
 def dialog(
     qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -116,7 +124,9 @@ def test_audio_config_reflects_checkboxes(dialog: rd.RecordDialog) -> None:
     assert cfg.mix is True
 
 
-def test_start_stop_lifecycle_writes_library(dialog: rd.RecordDialog, tmp_path: Path) -> None:
+def test_start_stop_lifecycle_writes_library(
+    dialog: rd.RecordDialog, tmp_path: Path, qtbot: QtBot
+) -> None:
     db_path = tmp_path / "library.sqlite3"
     # Podmieniamy silnik na wersję z atrapą procesu/concat (bez realnego FFmpeg).
     dialog._engine = RecorderEngine(
@@ -133,7 +143,7 @@ def test_start_stop_lifecycle_writes_library(dialog: rd.RecordDialog, tmp_path: 
     assert dialog._session is not None
     assert "przygotowuję" in dialog._log.toPlainText().lower()  # faza pre-roll przed „Nagrywam"
 
-    dialog._on_stop()
+    _stop_and_wait(dialog, qtbot)  # stop+concat na wątku roboczym → czekamy na wynik
     assert dialog._session is None
     assert "Zapisano" in dialog._log.toPlainText()
 
@@ -223,7 +233,7 @@ def test_verify_started_resets_ui_on_immediate_death(
 
 
 def test_on_stop_finalize_failure_keeps_segments_and_logs_workdir(
-    dialog: rd.RecordDialog, tmp_path: Path
+    dialog: rd.RecordDialog, tmp_path: Path, qtbot: QtBot
 ) -> None:
     """Porażka finalizacji: log błędu + ścieżka _work; segmenty zostają, brak wpisu w bibliotece."""
     db_path = tmp_path / "library.sqlite3"
@@ -246,7 +256,7 @@ def test_on_stop_finalize_failure_keeps_segments_and_logs_workdir(
     assert dialog._session is not None
     work_dir = dialog._session.work_dir
 
-    dialog._on_stop()
+    _stop_and_wait(dialog, qtbot)
     log = dialog._log.toPlainText()
     assert "Błąd finalizacji" in log
     assert str(work_dir) in log  # ścieżka _work do ręcznego odzysku
@@ -254,6 +264,63 @@ def test_on_stop_finalize_failure_keeps_segments_and_logs_workdir(
     # Segmenty NIE ruszone + brak wpisu w bibliotece.
     assert work_dir.exists() and any(work_dir.iterdir())
     assert RecordingStore(db_path).list_recordings(RecordingStatus.RECORDED) == []
+
+
+# ── Składanie (stop+concat) poza wątkiem UI ────────────────────────────────────
+
+
+def _prime_finalize(dialog: rd.RecordDialog, tmp_path: Path, concat: object) -> None:
+    """Podpina silnik z atrapą, startuje nagranie (bez pre-rollu) — gotowe do _on_stop()."""
+    dialog._engine = RecorderEngine(
+        encoders={"hevc_nvenc": True},
+        store=RecordingStore(tmp_path / "library.sqlite3"),
+        process_factory=_fake_factory,
+        concat_runner=concat,  # type: ignore[arg-type]
+    )
+    dialog._sys_audio.setChecked(False)
+    dialog._out_dir.set(str(tmp_path / "out"))
+    dialog._preroll_sec = 0
+    dialog._on_start()
+
+
+def test_finalize_off_ui_thread_unlocks_on_success(
+    dialog: rd.RecordDialog, tmp_path: Path, qtbot: QtBot
+) -> None:
+    """Sukces składania na wątku roboczym: UI zablokowane w trakcie, sygnał finished odblokowuje."""
+    _prime_finalize(dialog, tmp_path, _fake_concat)
+
+    dialog._on_stop()
+    # Synchronicznie po _on_stop: składanie ruszyło na osobnym wątku → UI zablokowane.
+    assert dialog._finalizing is True
+    assert dialog._finalize_thread is not None  # praca poza wątkiem UI
+    assert not dialog._start_btn.isEnabled()
+    assert not dialog._stop_btn.isEnabled()
+
+    qtbot.waitUntil(lambda: not dialog._finalizing, timeout=5000)  # sygnał finished dotarł
+    assert dialog._session is None
+    assert "Zapisano" in dialog._log.toPlainText()
+    assert dialog._start_btn.isEnabled()  # UI odblokowany po sukcesie
+    qtbot.waitUntil(lambda: dialog._finalize_thread is None, timeout=5000)  # wątek posprzątany
+
+
+def test_finalize_off_ui_thread_unlocks_on_failure(
+    dialog: rd.RecordDialog, tmp_path: Path, qtbot: QtBot
+) -> None:
+    """Porażka składania na wątku roboczym: sygnał failed loguje błąd i odblokowuje UI."""
+
+    def failing_concat(command: list[str]) -> int:
+        return 1  # brak pliku wynikowego → RuntimeError w finalize → sygnał failed
+
+    _prime_finalize(dialog, tmp_path, failing_concat)
+
+    dialog._on_stop()
+    assert dialog._finalizing is True  # składanie w toku (wątek roboczy)
+
+    qtbot.waitUntil(lambda: not dialog._finalizing, timeout=5000)  # sygnał failed dotarł
+    assert "Błąd finalizacji" in dialog._log.toPlainText()
+    assert dialog._session is None
+    assert dialog._start_btn.isEnabled()  # UI odblokowany także po porażce
+    qtbot.waitUntil(lambda: dialog._finalize_thread is None, timeout=5000)
 
 
 # ── Zamknięcie okna w trakcie nagrania (ochrona przed osieroceniem FFmpeg) ────
@@ -361,7 +428,7 @@ def test_collision_cancel_changes_nothing(
 
 
 def test_collision_overwrite_replaces_material(
-    dialog: rd.RecordDialog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    dialog: rd.RecordDialog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, qtbot: QtBot
 ) -> None:
     db_path = tmp_path / "library.sqlite3"
     _fake_engine(dialog, db_path)
@@ -378,14 +445,14 @@ def test_collision_overwrite_replaces_material(
     assert not (mat / "marker.txt").exists()  # stary folder usunięty (nadpisanie)
     assert dialog._session is not None
 
-    dialog._on_stop()
+    _stop_and_wait(dialog, qtbot)
     rows = RecordingStore(db_path).list_recordings(RecordingStatus.RECORDED)
     assert len(rows) == 1  # jeden materiał, bez duplikatu
     assert rows[0].title == "Nagranie"
 
 
 def test_collision_rename_uses_new_name(
-    dialog: rd.RecordDialog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    dialog: rd.RecordDialog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, qtbot: QtBot
 ) -> None:
     db_path = tmp_path / "library.sqlite3"
     _fake_engine(dialog, db_path)
@@ -400,7 +467,7 @@ def test_collision_rename_uses_new_name(
     dialog._on_start()
     assert dialog._title_edit.text() == "Nagranie (2)"  # tytuł zmieniony na wolny
 
-    dialog._on_stop()
+    _stop_and_wait(dialog, qtbot)
     rows = RecordingStore(db_path).list_recordings(RecordingStatus.RECORDED)
     titles = {r.title for r in rows}
     assert "Nagranie (2)" in titles  # zapisane pod nową nazwą
