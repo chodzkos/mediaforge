@@ -34,6 +34,31 @@ def test_enqueue_claim_done(tmp_path: Path) -> None:
     assert done is not None and done.status is JobStatus.DONE and done.progress == 1.0
 
 
+def test_recover_stale_returns_running_to_pending(tmp_path: Path) -> None:
+    """Restart procesu: zawieszone ``running`` wraca do kolejki (retry_count bez zmian)."""
+    store = _store(tmp_path)
+    job_id = store.enqueue("transcribe")
+    claimed = store.claim_next()
+    assert claimed is not None and claimed.status is JobStatus.RUNNING
+
+    # Nowy JobStore na TYM SAMYM pliku = symulacja restartu aplikacji.
+    restarted = JobStore(store.path)
+    assert restarted.recover_stale() == 1
+    recovered = restarted.get(job_id)
+    assert recovered is not None
+    assert recovered.status is JobStatus.PENDING
+    assert recovered.retry_count == 0  # przerwanie to nie porażka handlera
+    # Dispatcher po restarcie znów je bierze.
+    again = restarted.claim_next()
+    assert again is not None and again.id == job_id
+
+
+def test_recover_stale_empty_db_returns_zero(tmp_path: Path) -> None:
+    """Brak zawieszonych ``running`` → 0 (czysta baza / same pending/done)."""
+    store = _store(tmp_path)
+    assert store.recover_stale() == 0
+
+
 def test_retry_then_fail(tmp_path: Path) -> None:
     store = _store(tmp_path)
     job_id = store.enqueue("flaky", max_retries=1)

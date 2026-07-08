@@ -121,6 +121,25 @@ class JobStore:
         finally:
             conn.close()
 
+    def recover_stale(self) -> int:
+        """Wraca zawieszone ``running`` do ``pending`` i zwraca liczbę odzyskanych zadań.
+
+        Wołane raz przy starcie aplikacji, ZANIM ruszy dispatcher — zadania przerwane
+        zamknięciem/awarią wracają do kolejki (``retry_count`` bez zmian: przerwanie to nie
+        porażka handlera). Bez tego proces, który padł w trakcie handlera, zostawia wiersz
+        ``running`` na zawsze — nikt go już nie dokończy.
+        """
+        conn = connect(self.path)
+        try:
+            cur = conn.execute(
+                "UPDATE jobs SET status = 'pending', updated_at = ? WHERE status = 'running'",
+                (_now(),),
+            )
+            conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()
+
     def set_progress(self, job_id: int, progress: float) -> None:
         """Aktualizuje postęp zadania (0..1)."""
         clamped = max(0.0, min(1.0, progress))
