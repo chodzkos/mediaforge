@@ -71,6 +71,33 @@ def test_providers_are_booleans_only() -> None:
     assert all(isinstance(v, bool) for v in providers.values())
 
 
+def test_check_providers_matches_set_provider_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kontrakt: zapis i odczyt klucza dostawcy idą przez ten sam name-builder (nie rozjazd nazw).
+
+    Regresja na buga ``api_key_<p>`` (check_providers) vs ``api_key:<p>`` (secrets). Keyring
+    in-memory: gdyby strony budowały nazwę inaczej, odczyt nie znalazłby zapisanego klucza.
+    """
+    import keyring
+
+    from mediaforge.core.secrets import set_provider_api_key
+
+    store: dict[tuple[str, str], str] = {}
+
+    def _get(service: str, key: str) -> str | None:
+        return store.get((service, key))
+
+    def _set(service: str, key: str, value: str) -> None:
+        store[(service, key)] = value
+
+    monkeypatch.setattr(keyring, "get_password", _get)
+    monkeypatch.setattr(keyring, "set_password", _set)
+
+    set_provider_api_key("openai", "x")
+    result = tools.check_providers()
+    assert result["openai"] is True  # zapis widoczny w odczycie → spójny name-builder
+    assert result["anthropic"] is False  # bez klucza → False (kontrola negatywna)
+
+
 def test_render_report_text() -> None:
     text = report.render_report(detection.check_all())
     assert isinstance(text, str)
