@@ -269,9 +269,7 @@ def test_on_stop_finalize_failure_keeps_segments_and_logs_workdir(
 # ── Składanie (stop+concat) poza wątkiem UI ────────────────────────────────────
 
 
-def _prime_finalize(
-    dialog: rd.RecordDialog, tmp_path: Path, concat: object
-) -> None:
+def _prime_finalize(dialog: rd.RecordDialog, tmp_path: Path, concat: object) -> None:
     """Podpina silnik z atrapą, startuje nagranie (bez pre-rollu) — gotowe do _on_stop()."""
     dialog._engine = RecorderEngine(
         encoders={"hevc_nvenc": True},
