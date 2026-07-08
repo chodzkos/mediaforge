@@ -6,12 +6,39 @@ W S0: ``version``, ``info`` (środowisko) i ``paths`` (katalogi konfiguracji/log
 
 from __future__ import annotations
 
+import contextlib
+import io
+import sys
+from typing import cast
+
 import typer
 
 app = typer.Typer(
     help="mediaforge — archiwizacja i przetwarzanie materiałów edukacyjnych.",
     no_args_is_help=True,
 )
+
+
+def _force_utf8_stdio() -> None:
+    """Na Windows wymusza UTF-8 na stdout/stderr (przed jakimkolwiek echo).
+
+    Domyślna polska konsola to cp1250 — a raport ``doctor`` (render_report) używa znaków
+    ✓/✗/→/·, których cp1250 nie koduje → ``UnicodeEncodeError`` wywala narzędzie diagnostyczne.
+    Poprawka u WEJŚCIA CLI (nie w treści raportu — znaki są częścią czytelności). ``errors=
+    "replace"`` chroni też przed egzotycznymi kodowaniami. ``suppress(AttributeError)`` bo stdout
+    bywa przekierowany/nie-TTY (obiekt bez ``reconfigure`` albo ``None`` pod pythonw).
+    """
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(AttributeError):
+            cast(io.TextIOWrapper, stream).reconfigure(encoding="utf-8", errors="replace")
+
+
+@app.callback()
+def _main() -> None:
+    """Wspólne wejście CLI (callback Typer) — biegnie przed każdą komendą."""
+    _force_utf8_stdio()
 
 
 @app.command()
