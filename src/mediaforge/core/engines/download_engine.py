@@ -40,8 +40,7 @@ from mediaforge.core.engines.import_engine import (
 from mediaforge.core.engines.recorder import safe_filename
 from mediaforge.core.library.material import MaterialMetadata, write_metadata
 from mediaforge.core.library.recordings import RecordingStore
-
-_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+from mediaforge.core.winutil import NO_WINDOW_FLAGS
 
 # Przeglądarki dozwolone jako źródło sesji (opt-in). Zamknięta lista — nie przyjmujemy
 # dowolnego stringa do komendy zalogowanego pobierania. Firefox PIERWSZY (domyślny w GUI):
@@ -134,7 +133,7 @@ def _default_update_runner(command: list[str]) -> tuple[int, str]:
             capture_output=True,
             text=True,
             timeout=120,
-            creationflags=_NO_WINDOW,
+            creationflags=NO_WINDOW_FLAGS,
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -230,7 +229,7 @@ def _default_runner(command: list[str], on_line: LineCb | None = None) -> RunRes
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            creationflags=_NO_WINDOW,
+            creationflags=NO_WINDOW_FLAGS,
         )
     except (OSError, ValueError) as exc:
         return RunResult(returncode=1, tail=str(exc))
@@ -402,7 +401,7 @@ class DownloaderEngine:
                 capture_output=True,
                 text=True,
                 timeout=30,
-                creationflags=_NO_WINDOW,
+                creationflags=NO_WINDOW_FLAGS,
                 check=False,
             )
         except (OSError, subprocess.SubprocessError):

@@ -13,6 +13,8 @@ import re
 import subprocess
 from dataclasses import dataclass
 
+from mediaforge.core.winutil import NO_WINDOW_FLAGS
+
 # Wzorce nazw loopback (lowercase, substring). Uwaga na lokalizacje Windows.
 _LOOPBACK_HINTS: tuple[str, ...] = (
     "stereo mix",
@@ -79,6 +81,7 @@ def list_dshow_audio_devices(ffmpeg: str = "ffmpeg") -> list[DshowAudioDevice]:
             capture_output=True,
             text=True,
             timeout=10,
+            creationflags=NO_WINDOW_FLAGS,
         )
     except Exception:
         return []

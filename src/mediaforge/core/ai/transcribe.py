@@ -15,7 +15,6 @@ import contextlib
 import json
 import re
 import subprocess
-import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -26,8 +25,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from mediaforge.core.compute import GPUArch, classify
 from mediaforge.core.engines.import_engine import build_extract_wav_command
-
-_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+from mediaforge.core.winutil import NO_WINDOW_FLAGS
 
 
 class TranscriptionError(RuntimeError):
@@ -289,7 +287,7 @@ def _default_runner(command: list[str], on_line: LineCb | None = None) -> RunRes
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
-            creationflags=_NO_WINDOW,
+            creationflags=NO_WINDOW_FLAGS,
         )
     except (OSError, ValueError) as exc:
         return RunResult(returncode=1, stderr=str(exc))

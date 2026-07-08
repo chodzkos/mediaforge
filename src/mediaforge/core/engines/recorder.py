@@ -16,7 +16,6 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -44,9 +43,7 @@ from mediaforge.core.engines.ffmpeg_cmd import (
 )
 from mediaforge.core.library.material import MaterialMetadata, write_metadata
 from mediaforge.core.library.recordings import RecordingStatus, RecordingStore
-
-# Flaga ukrywająca okno konsoli przy subprocess na Windows (jak w core/detection/tools.py).
-_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+from mediaforge.core.winutil import NO_WINDOW_FLAGS
 
 
 class RecorderState(StrEnum):
@@ -93,7 +90,7 @@ class _FfmpegProcess:
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=self._log_file or subprocess.DEVNULL,
-            creationflags=_NO_WINDOW,
+            creationflags=NO_WINDOW_FLAGS,
         )
 
     def stop_gracefully(self, timeout: float = 8.0) -> None:
@@ -131,7 +128,7 @@ def _default_concat_runner(command: list[str]) -> int:
         command,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        creationflags=_NO_WINDOW,
+        creationflags=NO_WINDOW_FLAGS,
         check=False,
     )
     return proc.returncode
