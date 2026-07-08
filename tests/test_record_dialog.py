@@ -12,7 +12,7 @@ from pytestqt.qtbot import QtBot
 
 from mediaforge.core import config as cfg_mod
 from mediaforge.core.engines.ffmpeg_cmd import CaptureMode, CaptureSource
-from mediaforge.core.engines.recorder import RecorderEngine, material_dir_for
+from mediaforge.core.engines.recorder import RecorderEngine, RecorderState, material_dir_for
 from mediaforge.core.library.recordings import RecordingStatus, RecordingStore
 from mediaforge.gui import record_dialog as rd
 
@@ -25,7 +25,7 @@ class _FakeProc:
         return False
 
 
-def _fake_factory(command: list[str]) -> _FakeProc:
+def _fake_factory(command: list[str], log_path: Path | None = None) -> _FakeProc:
     pattern = command[-1]
     start = int(command[command.index("-segment_start_number") + 1])
     Path(pattern % start).write_bytes(b"SEG")
@@ -140,6 +140,85 @@ def test_start_stop_lifecycle_writes_library(dialog: rd.RecordDialog, tmp_path: 
     rows = RecordingStore(db_path).list_recordings(RecordingStatus.RECORDED)
     assert len(rows) == 1
     assert rows[0].title == "Test nagranie"
+
+
+# ── Śmierć procesu FFmpeg w trakcie / na starcie ──────────────────────────────
+
+
+class _DeadProc:
+    """Atrapa procesu, który natychmiast jest martwy (is_running() False)."""
+
+    def stop_gracefully(self, timeout: float = 8.0) -> None:
+        return None
+
+    def is_running(self) -> bool:
+        return False
+
+
+def _dead_factory(command: list[str], log_path: Path | None = None) -> _DeadProc:
+    pattern = command[-1]
+    start = int(command[command.index("-segment_start_number") + 1])
+    Path(pattern % start).write_bytes(b"SEG")
+    if log_path is not None:  # zasymuluj ślad stderr FFmpeg do diagnostyki
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("Device or resource busy\n", encoding="utf-8")
+    return _DeadProc()
+
+
+def _dead_engine(dialog: rd.RecordDialog, db_path: Path) -> None:
+    dialog._engine = RecorderEngine(
+        encoders={"hevc_nvenc": True},
+        store=RecordingStore(db_path),
+        process_factory=_dead_factory,
+        concat_runner=_fake_concat,
+    )
+
+
+def test_tick_detects_process_death_offers_resume_or_stop(
+    dialog: rd.RecordDialog, tmp_path: Path
+) -> None:
+    """_tick przy martwym procesie: log error + ogon, sesja w PAUSED, przyciski Wznów/Zatrzymaj."""
+    _dead_engine(dialog, tmp_path / "library.sqlite3")
+    dialog._title_edit.setText("Nagranie")
+    dialog._sys_audio.setChecked(False)
+    dialog._out_dir.set(str(tmp_path / "out"))
+    dialog._preroll_sec = 0
+
+    dialog._on_start()
+    assert dialog._session is not None
+    dialog._awaiting_start_verify = False  # po oknie sondy startu — _tick przejmuje wykrywanie
+
+    dialog._tick()
+    log = dialog._log.toPlainText()
+    assert "FFmpeg przerwał nagrywanie" in log
+    assert "Device or resource busy" in log  # ogon loga w diagnostyce
+    assert dialog._session is not None and dialog._session.state is RecorderState.PAUSED
+    # Dwa wyjścia odblokowane: Wznów (pauza) i Zatrzymaj; Start zablokowany.
+    assert dialog._pause_btn.isEnabled() and dialog._stop_btn.isEnabled()
+    assert not dialog._start_btn.isEnabled()
+    assert dialog._pause_btn.text() == "▶ Wznów"
+
+
+def test_verify_started_resets_ui_on_immediate_death(
+    dialog: rd.RecordDialog, tmp_path: Path
+) -> None:
+    """Śmierć w 1,5 s: _verify_started pokazuje błąd i resetuje UI, BEZ wpisu do biblioteki."""
+    db_path = tmp_path / "library.sqlite3"
+    _dead_engine(dialog, db_path)
+    dialog._title_edit.setText("Nagranie")
+    dialog._sys_audio.setChecked(False)
+    dialog._out_dir.set(str(tmp_path / "out"))
+    dialog._preroll_sec = 0
+
+    dialog._on_start()
+    assert dialog._session is not None
+    dialog._verify_started()  # ręcznie zamiast czekać 1,5 s
+
+    assert dialog._session is None  # UI zresetowane
+    assert "nie wystartował" in dialog._log.toPlainText().lower()
+    assert dialog._start_btn.isEnabled() and not dialog._stop_btn.isEnabled()
+    # Brak wpisu do biblioteki — nic sensownego się nie nagrało.
+    assert RecordingStore(db_path).list_recordings(RecordingStatus.RECORDED) == []
 
 
 # ── Kolizja nazwy: nadpisz / nowa nazwa / anuluj (dialog zamokowany przez _resolve_collision) ──

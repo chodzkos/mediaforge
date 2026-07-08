@@ -159,6 +159,9 @@ class RecordDialog(QDialog):
         # start ddagrab. FFmpeg nic nie tnie — user zaczyna treść po sygnale (głowa przed nią).
         self._preroll_sec = cfg_mod.get_record_preroll_sec(cfg_mod.load())
         self._recording_announced = False
+        # Okno sondy startu: do 1,5 s po starcie o śmierci procesu decyduje _verify_started
+        # (reset UI), nie _tick (który po tym oknie proponuje Wznów/Zatrzymaj).
+        self._awaiting_start_verify = False
 
         self._timer = QTimer(self)
         self._timer.setInterval(500)
@@ -450,6 +453,31 @@ class RecordDialog(QDialog):
                 f"Przygotowuję nagranie… (pre-roll {self._preroll_sec}s)", "paused"
             )
         self._timer.start()
+        # Sonda natychmiastowej śmierci: FFmpeg z błędną konfiguracją (złe urządzenie, brak
+        # enkodera) pada od razu. Po 1,5 s sprawdzamy, czy w ogóle ruszył.
+        self._awaiting_start_verify = True
+        QTimer.singleShot(1500, self._verify_started)
+        self._sync_controls()
+
+    def _verify_started(self) -> None:
+        """Sonda 1,5 s po starcie: gdy FFmpeg padł od razu, pokaż błąd + ogon loga i zresetuj UI.
+
+        Bez wpisu do biblioteki — nic sensownego się nie nagrało. Jednorazowa (``singleShot``);
+        po niej o śmierci procesu decyduje :meth:`_tick` (wybór Wznów/Zatrzymaj).
+        """
+        self._awaiting_start_verify = False
+        if self._session is None or self._session.state is not RecorderState.RECORDING:
+            return
+        if self._session.process_alive():
+            return
+        self._timer.stop()
+        self._log.append_line("FFmpeg nie wystartował — nagranie nie ruszyło", "error")
+        tail = self._session.read_process_log_tail()
+        if tail:
+            self._log.append_line(tail, "error")
+        self._session = None
+        self._recording_announced = False
+        self._timer_label.setText("Czas: 00:00:00")
         self._sync_controls()
 
     def _on_pause(self) -> None:
@@ -463,6 +491,9 @@ class RecordDialog(QDialog):
             self._session.resume()
             self._pause_btn.setText("⏸ Pauza")
             self._log.append_line("Wznowiono", "recording")
+            # Timer mógł zostać zatrzymany przez wykrycie śmierci procesu — wznów telemetrię.
+            if not self._timer.isActive():
+                self._timer.start()
         self._sync_controls()
 
     def _on_stop(self) -> None:
@@ -501,8 +532,36 @@ class RecordDialog(QDialog):
         recorded = elapsed - self._preroll_sec
         return recorded if recorded >= 0 else None
 
+    def _handle_process_death(self) -> None:
+        """Nagła śmierć FFmpeg w trakcie nagrania: zatrzymaj timer, pokaż błąd + ogon loga,
+        przełącz sesję w PAUSED (``mark_process_died`` — bez graceful stop) i zostaw użytkownikowi
+        dwa wyjścia: „Wznów” (nowy proces, ``resume``) albo „Zatrzymaj” (finalizacja tego, co jest
+        na dysku — segmenty przeżyły, to cała siła architektury segmentowej).
+        """
+        assert self._session is not None
+        self._timer.stop()
+        self._session.mark_process_died()
+        self._log.append_line("FFmpeg przerwał nagrywanie", "error")
+        tail = self._session.read_process_log_tail()
+        if tail:
+            self._log.append_line(tail, "error")
+        self._log.append_line(
+            "Wznów, aby kontynuować nowym procesem, albo Zatrzymaj, aby zapisać to, co jest.",
+            "paused",
+        )
+        self._pause_btn.setText("▶ Wznów")
+        self._sync_controls()
+
     def _tick(self) -> None:
         if self._session is None:
+            return
+        # Śmierć procesu po oknie sondy startu → wybór Wznów/Zatrzymaj (segmenty przeżyły).
+        if (
+            not self._awaiting_start_verify
+            and self._session.state is RecorderState.RECORDING
+            and not self._session.process_alive()
+        ):
+            self._handle_process_death()
             return
         st = self._session.status()
         recorded = self._recorded_seconds(st.elapsed_seconds)

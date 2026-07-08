@@ -50,10 +50,10 @@ class _FakeProc:
         return False
 
 
-def _fake_factory(spawned: list[list[str]]) -> Callable[[list[str]], _FakeProc]:
+def _fake_factory(spawned: list[list[str]]) -> Callable[[list[str], Path | None], _FakeProc]:
     """Fabryka atrapy: tworzy plik segmentu wg numeru z komendy (symuluje FFmpeg)."""
 
-    def factory(command: list[str]) -> _FakeProc:
+    def factory(command: list[str], log_path: Path | None = None) -> _FakeProc:
         pattern = command[-1]
         start = int(command[command.index("-segment_start_number") + 1])
         Path(pattern % start).write_bytes(b"SEGMENT")
@@ -101,6 +101,73 @@ def test_session_pause_resume_continues_segment_numbering(tmp_path: Path) -> Non
     assert names == ["seg_000.mkv", "seg_001.mkv"]
     # Czas = suma odcinków (bez pauzy): 5 + 3.
     assert session.elapsed_seconds == 8.0
+
+
+class _DyingProc:
+    """Atrapa procesu umierającego po ``alive_calls`` sprawdzeniach ``is_running()``."""
+
+    def __init__(self, alive_calls: int) -> None:
+        self._left = alive_calls
+
+    def stop_gracefully(self, timeout: float = 8.0) -> None:
+        return None
+
+    def is_running(self) -> bool:
+        if self._left <= 0:
+            return False
+        self._left -= 1
+        return True
+
+
+def test_session_detects_process_death_and_marks_paused(tmp_path: Path) -> None:
+    """Nagła śmierć FFmpeg: process_alive() False, mark_process_died() → PAUSED, czas doliczony."""
+    clock = _Clock()
+    proc = _DyingProc(alive_calls=1)  # żyje przy 1. sprawdzeniu, potem martwy
+
+    def factory(command: list[str], log_path: Path | None = None) -> _DyingProc:
+        pattern = command[-1]
+        start = int(command[command.index("-segment_start_number") + 1])
+        Path(pattern % start).write_bytes(b"SEGMENT")
+        return proc
+
+    session = RecorderSession(
+        source=CaptureSource(),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["standard"],
+        work_dir=tmp_path / "work",
+        encoders=_ENCODERS,
+        process_factory=factory,
+        clock=clock,
+    )
+    session.start()
+    clock.advance(4.0)
+    assert session.process_alive() is True  # 1. sprawdzenie — jeszcze żyje
+    assert session.process_alive() is False  # proces padł
+
+    session.mark_process_died()
+    assert _state(session) is RecorderState.PAUSED
+    assert session.elapsed_seconds == 4.0  # czas bieżącego odcinka doliczony
+    # Segment na dysku przeżył — można wznowić (ciągła numeracja) albo zatrzymać.
+    assert [p.name for p in segments.list_segments(tmp_path / "work")] == ["seg_000.mkv"]
+    session.resume()
+    assert _state(session) is RecorderState.RECORDING
+
+
+def test_read_process_log_tail_missing_file_is_empty(tmp_path: Path) -> None:
+    """Brak ffmpeg.log (atrapa nic nie zapisała) → pusty ogon (odpornie, bez wyjątku)."""
+    session = RecorderSession(
+        source=CaptureSource(),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["standard"],
+        work_dir=tmp_path / "work",
+        encoders=_ENCODERS,
+        process_factory=_fake_factory([]),
+    )
+    assert session.read_process_log_tail() == ""
+    # Z plikiem: zwraca ostatnie N linii.
+    (tmp_path / "work").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "work" / "ffmpeg.log").write_text("a\nb\nc\nd\n", encoding="utf-8")
+    assert session.read_process_log_tail(lines=2) == "c\nd"
 
 
 def test_session_finalize_concats_segments(tmp_path: Path) -> None:

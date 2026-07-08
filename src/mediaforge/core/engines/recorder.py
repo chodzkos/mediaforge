@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import IO, Protocol
 
 from mediaforge.core.engines import segments
 from mediaforge.core.engines.base import (
@@ -70,19 +70,29 @@ class RecorderProcess(Protocol):
         ...
 
 
-ProcessFactory = Callable[[list[str]], RecorderProcess]
+ProcessFactory = Callable[[list[str], Path | None], RecorderProcess]
 ConcatRunner = Callable[[list[str]], int]
 
 
 class _FfmpegProcess:
-    """Realny proces FFmpeg: graceful stop przez ``q`` na stdin, fallback terminate/kill."""
+    """Realny proces FFmpeg: graceful stop przez ``q`` na stdin, fallback terminate/kill.
 
-    def __init__(self, command: list[str]) -> None:
+    stderr FFmpeg trafia do ``log_path`` (tryb append — kolejne legi dopisują), zamiast do
+    ``/dev/null``. Dzięki temu po nagłej śmierci procesu zostaje ślad diagnostyczny (kod błędu
+    urządzenia, brak enkodera, itp.). Plik żyje w ``_work``, więc sprząta się razem z segmentami.
+    """
+
+    def __init__(self, command: list[str], log_path: Path | None = None) -> None:
+        # Uchwyt trzyma proces przez cały czas życia (zamykany w stop_gracefully) — świadomie
+        # bez context managera. Append: kolejne legi dopisują do tego samego ffmpeg.log.
+        self._log_file: IO[bytes] | None = None
+        if log_path is not None:
+            self._log_file = log_path.open("ab")
         self._proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=self._log_file or subprocess.DEVNULL,
             creationflags=_NO_WINDOW,
         )
 
@@ -103,13 +113,17 @@ class _FfmpegProcess:
                 self._proc.wait(timeout=3.0)
             except subprocess.TimeoutExpired:
                 self._proc.kill()
+        finally:
+            if self._log_file is not None:
+                self._log_file.close()
+                self._log_file = None
 
     def is_running(self) -> bool:
         return self._proc.poll() is None
 
 
-def _default_process_factory(command: list[str]) -> RecorderProcess:
-    return _FfmpegProcess(command)
+def _default_process_factory(command: list[str], log_path: Path | None = None) -> RecorderProcess:
+    return _FfmpegProcess(command, log_path)
 
 
 def _default_concat_runner(command: list[str]) -> int:
@@ -226,7 +240,7 @@ class RecorderSession:
             segment_seconds=self.segment_seconds,
             segment_start_number=self._next_segment_number(),
         )
-        self._proc = self._process_factory(command)
+        self._proc = self._process_factory(command, self.work_dir / "ffmpeg.log")
         self._leg_started_at = self._clock()
 
     def _next_segment_number(self) -> int:
@@ -280,6 +294,39 @@ class RecorderSession:
         if self._leg_started_at is not None:
             self._elapsed_before += max(0.0, self._clock() - self._leg_started_at)
             self._leg_started_at = None
+
+    # ── Wykrycie śmierci procesu ──────────────────────────────────────────────────
+
+    def process_alive(self) -> bool:
+        """Czy proces FFmpeg bieżącego odcinka wciąż żyje (do wykrycia nagłej śmierci w GUI)."""
+        return self._proc is not None and self._proc.is_running()
+
+    def read_process_log_tail(self, lines: int = 8) -> str:
+        """Końcówka ``ffmpeg.log`` (ostatnie ``lines`` linii) — diagnostyka po śmierci procesu.
+
+        Odpornie: brak pliku (atrapa / proces nie zdążył nic zapisać) → pusty string.
+        """
+        try:
+            content = (self.work_dir / "ffmpeg.log").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        return "\n".join(content.splitlines()[-lines:])
+
+    def mark_process_died(self) -> None:
+        """Odnotowuje nagłą śmierć procesu FFmpeg: przechodzi w PAUSED BEZ ``stop_gracefully``.
+
+        W odróżnieniu od :meth:`pause` nie prosi martwego już procesu o domknięcie — jedynie
+        dolicza czas bieżącego odcinka i porzuca uchwyt. Segmenty na dysku są nienaruszone, więc
+        użytkownik może wznowić (nowy proces, ciągła numeracja) albo zatrzymać (finalizacja tego,
+        co jest) — to cała siła architektury segmentowej.
+        """
+        if self.state is not RecorderState.RECORDING:
+            raise RuntimeError(f"mark_process_died() niedozwolony w stanie {self.state}")
+        self._proc = None  # proces martwy — nie wołamy stop_gracefully
+        if self._leg_started_at is not None:
+            self._elapsed_before += max(0.0, self._clock() - self._leg_started_at)
+            self._leg_started_at = None
+        self.state = RecorderState.PAUSED
 
     # ── Telemetria ──────────────────────────────────────────────────────────────
 
