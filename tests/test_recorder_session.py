@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
 from mediaforge.core.engines import segments
 from mediaforge.core.engines.base import AcquireOptions, SourceKind
 from mediaforge.core.engines.base import Source as EngineSource
@@ -185,11 +187,76 @@ def test_session_finalize_concats_segments(tmp_path: Path) -> None:
     session.start()
     session.stop()
     out = tmp_path / "final.mkv"
-    plan = session.finalize(out)
+    plan, rc = session.finalize(out)
 
     assert plan.recoverable is True
+    assert rc == 0  # kod wyjścia concat
     assert out.exists()
     assert outputs == [out]
+
+
+def _no_segment_factory(command: list[str], log_path: Path | None = None) -> _FakeProc:
+    """Fabryka NIE tworząca pliku segmentu — symuluje FFmpeg padły przed jakimkolwiek zapisem."""
+    return _FakeProc()
+
+
+def test_finalize_without_segments_raises_and_writes_nothing(tmp_path: Path) -> None:
+    """Brak ważnych segmentów → RuntimeError; ani metadata.json, ani wiersz w store."""
+    db = tmp_path / "lib.sqlite3"
+    Database(db).migrate()
+    store = RecordingStore(db)
+    engine = RecorderEngine(
+        encoders=_ENCODERS,
+        store=store,
+        process_factory=_no_segment_factory,
+        concat_runner=_fake_concat([]),
+    )
+    session = engine.new_session(
+        source=CaptureSource(),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["standard"],
+        work_dir=tmp_path / "out" / "Nagranie" / "_work",
+    )
+    session.start()
+    session.stop()
+
+    with pytest.raises(RuntimeError, match="Brak ważnych segmentów"):
+        engine.finalize_to_library(session, title="Nagranie", output_dir=tmp_path / "out")
+
+    assert not (tmp_path / "out" / "Nagranie" / "metadata.json").exists()
+    assert store.list_materials() == []
+
+
+def test_finalize_concat_failure_raises_and_writes_nothing(tmp_path: Path) -> None:
+    """Concat zwraca ≠0 i nie tworzy pliku → RuntimeError; brak wpisu; segmenty zostają w _work."""
+    db = tmp_path / "lib.sqlite3"
+    Database(db).migrate()
+    store = RecordingStore(db)
+
+    def failing_concat(command: list[str]) -> int:
+        return 1  # kod ≠ 0 i celowo NIE tworzy pliku wynikowego
+
+    engine = RecorderEngine(
+        encoders=_ENCODERS,
+        store=store,
+        process_factory=_fake_factory([]),  # tworzy segment (jest co sklejać)
+        concat_runner=failing_concat,
+    )
+    session = engine.new_session(
+        source=CaptureSource(),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["standard"],
+        work_dir=tmp_path / "out" / "Nagranie" / "_work",
+    )
+    session.start()
+    session.stop()
+
+    with pytest.raises(RuntimeError, match="Sklejanie segmentów nie powiodło się"):
+        engine.finalize_to_library(session, title="Nagranie", output_dir=tmp_path / "out")
+
+    assert not (tmp_path / "out" / "Nagranie" / "metadata.json").exists()
+    assert store.list_materials() == []
+    assert list(segments.list_segments(session.work_dir))  # segmenty do ręcznego odzysku
 
 
 def test_invalid_transitions_raise(tmp_path: Path) -> None:

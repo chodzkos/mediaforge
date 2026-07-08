@@ -509,7 +509,10 @@ class RecordDialog(QDialog):
                 output_dir=Path(self._out_dir.get() or str(cfg_mod.default_recordings_dir())),
             )
         except Exception as exc:  # błąd składania pokazujemy w logu, nie wywalamy GUI
+            # Katalog _work z segmentami NIE jest ruszany — zostają do ręcznego odzysku.
+            work_dir = self._session.work_dir
             self._log.append_line(f"Błąd finalizacji: {exc}", "error")
+            self._log.append_line(f"Segmenty zachowane do odzysku: {work_dir}", "info")
             self._session = None
             self._sync_controls()
             return

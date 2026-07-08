@@ -221,6 +221,40 @@ def test_verify_started_resets_ui_on_immediate_death(
     assert RecordingStore(db_path).list_recordings(RecordingStatus.RECORDED) == []
 
 
+def test_on_stop_finalize_failure_keeps_segments_and_logs_workdir(
+    dialog: rd.RecordDialog, tmp_path: Path
+) -> None:
+    """Porażka finalizacji: log błędu + ścieżka _work; segmenty zostają, brak wpisu w bibliotece."""
+    db_path = tmp_path / "library.sqlite3"
+
+    def failing_concat(command: list[str]) -> int:
+        return 1  # kod ≠ 0 i brak pliku wynikowego → RuntimeError w finalize
+
+    dialog._engine = RecorderEngine(
+        encoders={"hevc_nvenc": True},
+        store=RecordingStore(db_path),
+        process_factory=_fake_factory,  # tworzy segment (jest co sklejać)
+        concat_runner=failing_concat,
+    )
+    dialog._title_edit.setText("Nagranie")
+    dialog._sys_audio.setChecked(False)
+    dialog._out_dir.set(str(tmp_path / "out"))
+    dialog._preroll_sec = 0
+
+    dialog._on_start()
+    assert dialog._session is not None
+    work_dir = dialog._session.work_dir
+
+    dialog._on_stop()
+    log = dialog._log.toPlainText()
+    assert "Błąd finalizacji" in log
+    assert str(work_dir) in log  # ścieżka _work do ręcznego odzysku
+    assert dialog._session is None
+    # Segmenty NIE ruszone + brak wpisu w bibliotece.
+    assert work_dir.exists() and any(work_dir.iterdir())
+    assert RecordingStore(db_path).list_recordings(RecordingStatus.RECORDED) == []
+
+
 # ── Kolizja nazwy: nadpisz / nowa nazwa / anuluj (dialog zamokowany przez _resolve_collision) ──
 
 
