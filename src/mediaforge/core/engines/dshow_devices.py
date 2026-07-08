@@ -74,13 +74,19 @@ def list_dshow_audio_devices(ffmpeg: str = "ffmpeg") -> list[DshowAudioDevice]:
     """Uruchamia ffmpeg → urządzenia audio dshow. Tylko Windows. Odporne na brak ffmpeg.
 
     ffmpeg wypisuje listę na STDERR i kończy się != 0 ('dummy' to nie urządzenie) — OK.
+
+    Dekodujemy jako UTF-8 (ffmpeg pisze UTF-8 niezależnie od code page konsoli Windows;
+    ``text=True`` bez ``encoding`` brałoby cp1250/cp852 → krzaki w polskich nazwach). ``errors=
+    "replace"`` — pojedynczy zły bajt nie wywala enumeracji. Timeout 5 s: enumeracja jest szybka,
+    a to blokuje wątek UI (do czasu przeniesienia na wątek roboczy).
     """
     try:
         proc = subprocess.run(
             [ffmpeg, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
             capture_output=True,
-            text=True,
-            timeout=10,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
             creationflags=NO_WINDOW_FLAGS,
         )
     except Exception:
