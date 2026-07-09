@@ -53,10 +53,16 @@ _SUMMARY_MAX_TOKENS_KEY = "summary_max_tokens"  # limit tokenów odpowiedzi stre
 _SUMMARY_TIMEOUT_KEY = "summary_timeout_sec"  # timeout żądania do gatewaya (domyślnie 600 s)
 _SUMMARY_PROMPT_SUFFIX_KEY = "summary_prompt_suffix"  # sufiks system-promptu (qwen3: /no_think)
 _SUMMARY_CHUNK_CHARS_KEY = "summary_chunk_chars"  # próg podziału transkryptu (map-reduce)
+_SUMMARY_REDUCE_MAX_TOKENS_KEY = "summary_reduce_max_tokens"  # osobny budżet wyjścia fazy reduce
 
 # ~8k tokenów promptu — komfortowo w oknie 32k z miejscem na wyjście; powyżej tego progu
 # streszczenie idzie ścieżką map-reduce (kawałki po granicach segmentów), poniżej: jeden request.
 DEFAULT_SUMMARY_CHUNK_CHARS = 24_000
+
+# Reduce ma ODWROTNĄ sytuację tokenową niż map: prompt mały (kilka streszczeń cząstkowych, nie
+# 24k transkryptu), więc w oknie zostaje duży zapas na wyjście. Osobny, większy budżet (8192)
+# pozwala go użyć — wspólny cap z map-ami (4096) ucinał finalne streszczenie.
+DEFAULT_SUMMARY_REDUCE_MAX_TOKENS = 8192
 
 
 def load(on_dirty: Callable[[], None] | None = None) -> Config:
@@ -253,6 +259,19 @@ def get_summary_chunk_chars(cfg: Config) -> int:
     if isinstance(value, int) and value > 0:
         return value
     return DEFAULT_SUMMARY_CHUNK_CHARS
+
+
+def get_summary_reduce_max_tokens(cfg: Config) -> int:
+    """Budżet tokenów wyjścia fazy REDUCE map-reduce (domyślnie 8192).
+
+    Osobny od ``summary_max_tokens`` (mapy), bo reduce pisze najdłużej ze wszystkich wywołań
+    (synteza N streszczeń cząstkowych), a jego prompt jest mały — w oknie zostaje zapas, którego
+    wspólny cap z mapami nie pozwalał użyć (finalne streszczenie ucinane). Wartość <= 0 → default.
+    """
+    value = cfg.get(_SUMMARY_REDUCE_MAX_TOKENS_KEY)
+    if isinstance(value, int) and value > 0:
+        return value
+    return DEFAULT_SUMMARY_REDUCE_MAX_TOKENS
 
 
 def get_record_preroll_sec(cfg: Config) -> int:

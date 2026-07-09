@@ -95,11 +95,14 @@ def _system_prompt(language: str, suffix: str = "") -> str:
     return f"{base} {suffix}" if suffix else base
 
 
-def build_summary_request(text: str, route: ModelRoute, config: SummaryConfig) -> dict[str, Any]:
+def build_summary_request(
+    text: str, route: ModelRoute, config: SummaryConfig, *, max_tokens: int | None = None
+) -> dict[str, Any]:
     """Składa payload chat-completions: model z ``route``, transkrypt jako wiadomość usera.
 
     Kształt zgodny z OpenAI/LiteLLM: ``model`` bierze się z trasy (lokalna/chmurowa),
-    system-prompt niesie język streszczenia + ``config.prompt_suffix``, ``max_tokens`` z configu.
+    system-prompt niesie język streszczenia + ``config.prompt_suffix``. ``max_tokens`` z configu,
+    chyba że jawnie nadpisany — faza reduce ma osobny, większy budżet (patrz :meth:`run`).
     """
     return {
         "model": route.model,
@@ -107,7 +110,7 @@ def build_summary_request(text: str, route: ModelRoute, config: SummaryConfig) -
             {"role": "system", "content": _system_prompt(config.language, config.prompt_suffix)},
             {"role": "user", "content": text},
         ],
-        "max_tokens": config.max_tokens,
+        "max_tokens": config.max_tokens if max_tokens is None else max_tokens,
     }
 
 
@@ -213,12 +216,42 @@ def map_prompt(index: int, total: int, chunk: Chunk) -> str:
 
 
 def reduce_prompt(body: str) -> str:
-    """Wiadomość usera dla fazy REDUCE: sklej streszczenia cząstkowe w jedno spójne."""
+    """Wiadomość usera dla fazy REDUCE: sklej streszczenia cząstkowe w jedno spójne.
+
+    Prompt niesie CEL DŁUGOŚCI — bez niego model próbuje zachować wszystko z fragmentów
+    (konkatenacja) i z definicji dobija każdego capa. „Syntetyzuj, nie sklejaj" celuje w
+    streszczenie, nie sumę streszczeń.
+    """
     return (
         "Poniżej streszczenia kolejnych fragmentów wykładu. Połącz je w jedno spójne "
-        "streszczenie po polsku (bez powtórzeń, zachowaj chronologię):\n\n"
+        "streszczenie po polsku (bez powtórzeń, zachowaj chronologię). "
+        "Docelowa długość: 6-12 akapitów — syntetyzuj, nie sklejaj; pomijaj powtórzenia "
+        "między fragmentami.\n\n"
         f"{body}"
     )
+
+
+# Bezpieczny sufit okna kontekstu (num_ctx 32k z marginesem na system-prompt + narzut czatu).
+# Guard reduce trzyma prompt + wyjście poniżej tej granicy, żeby długi prompt nie wypadł za okno.
+SAFE_CONTEXT_TOKENS = 30_000
+
+
+def estimate_tokens(text: str) -> int:
+    """Zgrubna estymata tokenów promptu (~3 znaki/token) — do guardu okna, nie do rozliczeń."""
+    return len(text) // 3
+
+
+def fit_reduce_budget(
+    prompt: str, reduce_max_tokens: int, *, safe_ctx: int = SAFE_CONTEXT_TOKENS
+) -> int:
+    """Przycina budżet wyjścia reduce, by ``prompt + wyjście`` zmieściło się w oknie.
+
+    Zwraca ``min(reduce_max_tokens, okno - tokeny_promptu)``, nie mniej niż 1. Lepiej krótsze
+    wyjście niż ciche wypadnięcie promptu za ``num_ctx`` (model urwałby wtedy WEJŚCIE, nie tylko
+    wyjście). Wołający porównuje wynik z ``reduce_max_tokens`` i loguje warning, jeśli przyciął.
+    """
+    room = safe_ctx - estimate_tokens(prompt)
+    return min(reduce_max_tokens, max(1, room))
 
 
 def part_section(index: int, total: int, chunk: Chunk, text: str, *, truncated: bool) -> str:
@@ -327,17 +360,18 @@ class SummaryClient:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
         return headers
 
-    def _post(self, user_content: str, route: ModelRoute) -> Any:
+    def _post(self, user_content: str, route: ModelRoute, *, max_tokens: int | None = None) -> Any:
         """POST wiadomości usera; zwrot sparsowanego JSON-a albo :class:`GatewayError`.
 
         Wspólny rdzeń ścieżki pojedynczej (:meth:`summarize`) i map-reduce (:meth:`run`).
+        ``max_tokens`` (gdy podany) nadpisuje budżet wyjścia z configu — faza reduce ma osobny.
         Rozdzielamy dwa powody błędu transportu, bo prowadzą do różnych działań użytkownika:
         **timeout** (gateway ciężko liczy długi materiał) → komunikat o limicie czasu z podpowiedzią
         „zwiększ summary_timeout"; **błąd połączenia** (gateway nie wstał / zły endpoint) →
         komunikat NAZYWAJĄCY gateway (``Gateway niedostępny``). Mylenie ich sugerowało padnięty
         gateway, gdy ten tylko wolno liczył.
         """
-        payload = build_summary_request(user_content, route, self.config)
+        payload = build_summary_request(user_content, route, self.config, max_tokens=max_tokens)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         url = _endpoint(self.config.base_url)
         try:
@@ -365,14 +399,18 @@ class SummaryClient:
         """
         return parse_summary_response(self._post(text, route), max_tokens=self.config.max_tokens)
 
-    def run(self, user_content: str, route: ModelRoute) -> SummaryResult:
+    def run(
+        self, user_content: str, route: ModelRoute, *, max_tokens: int | None = None
+    ) -> SummaryResult:
         """POST dowolnej wiadomości (map/reduce) → treść + flaga ucięcia (do adnotacji plików).
 
         Jak :meth:`summarize`, ale zwraca też informację o prawdopodobnym ucięciu treści na
-        limicie ``summary_max_tokens`` (:func:`is_truncated`) — map-reduce oznacza takie sekcje
-        w ``summary_parts.md`` / ``summary.md`` zamiast wywalać job (ucięte streszczenie jest
-        wciąż użyteczne).
+        limicie budżetu (:func:`is_truncated`) — map-reduce oznacza takie sekcje w
+        ``summary_parts.md`` / ``summary.md`` zamiast wywalać job (ucięte streszczenie jest wciąż
+        użyteczne). ``max_tokens`` nadpisuje budżet z configu (faza reduce ma osobny, większy) —
+        detekcja ucięcia liczona jest wobec REALNIE użytego budżetu, nie domyślnego z configu.
         """
-        data = self._post(user_content, route)
-        text = parse_summary_response(data, max_tokens=self.config.max_tokens)
-        return SummaryResult(text=text, truncated=is_truncated(data, self.config.max_tokens))
+        budget = self.config.max_tokens if max_tokens is None else max_tokens
+        data = self._post(user_content, route, max_tokens=max_tokens)
+        text = parse_summary_response(data, max_tokens=budget)
+        return SummaryResult(text=text, truncated=is_truncated(data, budget))

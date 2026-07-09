@@ -7,6 +7,7 @@ import logging
 import urllib.error
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -400,12 +401,14 @@ def _mr_client(
     max_tokens: int = 4096,
     fail_fragment: int | None = None,
     truncate_fragments: tuple[int, ...] = (),
+    map_content_len: int = 0,
 ) -> tuple[SummaryClient, list[dict[str, object]]]:
-    """Klient map-reduce: liczy wywołania, opcjonalnie wywala/ucina wybrany fragment.
+    """Klient map-reduce: liczy wywołania, opcjonalnie wywala/ucina/pompuje wybrany fragment.
 
     Odpowiedź „S{n}" (n = numer wywołania) pozwala testom rozróżnić mapę (S1..SN) od reduce
     (ostatnie wywołanie). ``fail_fragment``/``truncate_fragments`` celują w konkretny fragment po
     treści promptu (a nie po numerze wywołania), więc są odporne na retry kolejki.
+    ``map_content_len`` pompuje treść map (streszczenia cząstkowe) — do guardu okna fazy reduce.
     """
     payloads: list[dict[str, object]] = []
 
@@ -413,13 +416,17 @@ def _mr_client(
         data = json.loads(body)
         payloads.append(data)
         user = data["messages"][1]["content"]
+        is_map = "Fragment " in user
         if fail_fragment is not None and f"Fragment {fail_fragment}/" in user:
             raise urllib.error.URLError("boom")
         truncated = any(f"Fragment {f}/" in user for f in truncate_fragments)
+        content = f"S{len(payloads)}"
+        if is_map and map_content_len:
+            content = content.ljust(map_content_len, "x")  # duże streszczenie cząstkowe
         usage = {"completion_tokens": max_tokens if truncated else 10}
-        return json.dumps(
-            {"choices": [{"message": {"content": f"S{len(payloads)}"}}], "usage": usage}
-        ).encode("utf-8")
+        return json.dumps({"choices": [{"message": {"content": content}}], "usage": usage}).encode(
+            "utf-8"
+        )
 
     client = SummaryClient(
         SummaryConfig(base_url="http://gw:4000", max_tokens=max_tokens), transport
@@ -546,3 +553,53 @@ def test_summarize_map_truncation_warns_and_annotates(tmp_path: Path, caplog) ->
     assert parts.count("mogła zostać ucięta") == 1
     section_2 = parts.split("## Część 2/3")[1].split("## Część 3/3")[0]
     assert "mogła zostać ucięta" in section_2
+
+
+def _is_map_payload(payload: dict[str, object]) -> bool:
+    messages = payload["messages"]
+    return "Fragment " in messages[1]["content"]  # type: ignore[index]
+
+
+def _max_tokens(payload: dict[str, object]) -> int:
+    return cast(int, payload["max_tokens"])
+
+
+def test_summarize_reduce_uses_separate_budget(tmp_path: Path) -> None:
+    """Reduce ma OSOBNY budżet: map = summary_max_tokens (4096), reduce = 8192 per wywołanie."""
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, _folder = _seed_multi(store, tmp_path / "lib", "Bud", ["a" * 100, "b" * 100, "c" * 100])
+    client, payloads = _mr_client(max_tokens=4096)
+
+    queue = JobQueue(JobStore(db), lanes=DEFAULT_LANES, routes=DEFAULT_ROUTES)
+    _register_summary(queue, store, client)  # reduce_max_tokens = default 8192
+    enqueue_summarize(store, JobStore(db), rec_id, local_model=_LOCAL, cloud_model=_CLOUD)
+    queue.process_pending()
+
+    map_payloads = [p for p in payloads if _is_map_payload(p)]
+    reduce_payloads = [p for p in payloads if not _is_map_payload(p)]
+    assert len(map_payloads) == 3 and len(reduce_payloads) == 1
+    assert all(_max_tokens(p) == 4096 for p in map_payloads)  # mapy: mały cel „1-3 akapity"
+    assert _max_tokens(reduce_payloads[0]) == 8192  # reduce: osobny, większy budżet
+
+
+def test_summarize_reduce_window_guard_trims_and_warns(tmp_path: Path, caplog) -> None:  # type: ignore[no-untyped-def]
+    """Duże streszczenia cząstkowe → prompt reduce blisko okna → budżet przycięty + warning."""
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, _folder = _seed_multi(store, tmp_path / "lib", "Guard", ["a" * 100, "b" * 100])
+    # Każde streszczenie cząstkowe ~70k znaków → prompt reduce ~23k tokenów → zapas < 8192.
+    client, payloads = _mr_client(map_content_len=70_000)
+    handler = make_summarize_handler(
+        store, client, local_model=_LOCAL, cloud_model=_CLOUD, chunk_chars=120
+    )
+    job_id = enqueue_summarize(store, JobStore(db), rec_id, local_model=_LOCAL, cloud_model=_CLOUD)
+    job = JobStore(db).get(job_id)
+    assert job is not None
+
+    with caplog.at_level(logging.WARNING, logger="mediaforge"):
+        handler(job, lambda _p: None)
+    assert "budżet wyjścia przycięty" in caplog.text
+    reduce_payloads = [p for p in payloads if not _is_map_payload(p)]
+    # Przy dużym promptcie reduce budżet zszedł poniżej pełnego 8192 (guard okna zadziałał).
+    assert any(_max_tokens(p) < 8192 for p in reduce_payloads)

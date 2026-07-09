@@ -11,11 +11,13 @@ import pytest
 from mediaforge.core.ai.chunking import Chunk, Segment
 from mediaforge.core.ai.routing import ModelRoute, RouteKind
 from mediaforge.core.ai.summarize import (
+    SAFE_CONTEXT_TOKENS,
     GatewayError,
     SummaryClient,
     SummaryConfig,
     SummaryResult,
     build_summary_request,
+    fit_reduce_budget,
     is_truncated,
     map_prompt,
     parse_summary_response,
@@ -215,6 +217,45 @@ def test_reduce_parts_hierarchical_multiple_rounds() -> None:
     assert num > 1  # hierarchiczny: więcej niż jedno wywołanie
     assert final.text == "s"
     assert call_count == num
+
+
+def test_reduce_prompt_has_length_target() -> None:
+    """Prompt reduce niesie CEL DŁUGOŚCI (synteza, nie konkatenacja) — inaczej model dobija capa."""
+    prompt = reduce_prompt("body")
+    assert "6-12 akapitów" in prompt
+    assert "syntetyzuj" in prompt
+
+
+def test_fit_reduce_budget_full_when_room_ample() -> None:
+    """Mały prompt → cały budżet reduce (guard nie ingeruje)."""
+    assert fit_reduce_budget("krótki prompt", 8192) == 8192
+
+
+def test_fit_reduce_budget_trims_when_prompt_large() -> None:
+    """Duży prompt → budżet przycięty do zapasu okna (prompt + wyjście <= safe_ctx), nigdy < 1."""
+    # Prompt ~ (safe_ctx - 1000) tokenów → zostaje ~1000 na wyjście, mniej niż pełne 8192.
+    big = "x" * ((SAFE_CONTEXT_TOKENS - 1000) * 3)
+    budget = fit_reduce_budget(big, 8192)
+    assert budget < 8192 and budget == SAFE_CONTEXT_TOKENS - (SAFE_CONTEXT_TOKENS - 1000)
+    # Prompt większy niż całe okno → budżet nie schodzi poniżej 1 (zawsze próbujemy coś napisać).
+    assert fit_reduce_budget("y" * (SAFE_CONTEXT_TOKENS * 6), 8192) == 1
+
+
+def test_run_honors_max_tokens_override() -> None:
+    """``run(max_tokens=)`` nadpisuje budżet: override w payloadzie, ucięcie liczone wobec niego."""
+    captured: dict[str, object] = {}
+
+    def transport(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> bytes:
+        captured["payload"] = json.loads(body)
+        return json.dumps(
+            {"choices": [{"message": {"content": "OK"}}], "usage": {"completion_tokens": 6000}}
+        ).encode("utf-8")
+
+    client = SummaryClient(SummaryConfig(base_url="http://gw:4000", max_tokens=4096), transport)
+    # Budżet reduce 8192; completion 6000 < 8192 → NIE ucięte (mimo że > mapowego 4096).
+    result = client.run("reduce to", _ROUTE, max_tokens=8192)
+    assert captured["payload"]["max_tokens"] == 8192  # type: ignore[index]
+    assert result.truncated is False
 
 
 def test_parse_ok() -> None:
