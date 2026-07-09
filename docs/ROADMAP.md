@@ -157,3 +157,118 @@ Guard NAS-safety pomija prune, gdy root niedostępny/pusty a indeks niepusty (ż
 
 **DetailPanel.**
 „DetailPanel: wzorzec panelu szczegółów odpornego na elementy zmiennej wysokości — wynieść z mediaforge po sprawdzeniu w S5/S6, gdy pojawi się drugi konsument".
+
+# Slajdy z konferencji mp.pl — ustalenia i plan (backlog)
+
+Status: ODROCZONE. Wartość końcowa (slajdy w bibliotece + mapa slajd↔czas) osiągalna JUŻ TERAZ
+przez feat/attach-slides (zmergowane) + ręczny zapis slajdów z przeglądarki. Automatyzacja
+dostarczania (companion extension) to osobny, większy etap — do decyzji po sprawdzeniu, czy
+półautomat wystarcza w praktyce.
+
+## Dlaczego automatyczne pobieranie z mp.pl jest POZA granicą (ustalone pomiarami)
+
+Zmierzone na żywej stronie wykładu:
+- Manifest slajdów (dane Next.js `slides[]` z tytułem/prelegentem/czasami/URL-ami) wymaga
+  ZALOGOWANIA — bez sesji lista slajdów jest niedostępna.
+- Bezpośredni URL obrazka na `adst.mp.pl` z samym nagłówkiem `Referer: konferencje.mp.pl`
+  → HTTP 403 (odpowiedź HTML, nie PNG). Hotlink-protection po Refererze NIE wystarcza.
+- Działający request przeglądarki niesie PEŁNĄ sesję: `PHPSESSID` (sesja aplikacji) +
+  `cf_clearance` (token Cloudflare potwierdzający przejście challenge anty-bot).
+- Obrazki idą przez proxy `confmages.mp.pl/_/resize:fill:1080:0/quality:75/<base64-URL>`
+  (imgproxy: skalowanie do 1080px, jakość 75%). Oryginały (pełne PNG) na `adst.mp.pl`.
+- Numeracja plików (`slide0497_450s.png`) niesie klatkę + czas, ale NIE jest enumerowalna
+  w ciemno — źródłem prawdy o liście slajdów jest wyłącznie manifest/DOM, nie wzorzec nazw.
+
+WNIOSEK: jedyna droga automatu prowadzi przez niesienie `cf_clearance` — tokenu, którego
+zadaniem jest odróżnianie człowieka od bota. Automatyczne jego użycie = obchodzenie
+zabezpieczenia technicznego, NIEZALEŻNIE od tego, że użytkownik ma legalny dostęp do treści.
+To po niewłaściwej stronie twardej granicy z S5 ("ZERO obchodzenia zabezpieczeń dostępu").
+Dlatego mediaforge NIE pobiera slajdów mp.pl bezpośrednio. Ta decyzja jest ŚWIADOMA, nie
+przeoczeniem — nie wracać do pomysłu automatu bez ponownego przemyślenia tej granicy.
+
+## Rozwiązanie zgodne z granicą: companion extension Firefoksa (jeśli i kiedy warto)
+
+Idea: slajdy pobiera PRZEGLĄDARKA we własnym, zalogowanym kontekście (sesja, cf_clearance,
+challenge Cloudflare zostają po stronie normalnej przeglądarki użytkownika). Aplikacja nigdy
+nie czyta, nie przechowuje ani nie transportuje poświadczeń — dostaje gotowe pliki + manifest.
+To NIE jest obchodzenie zabezpieczenia; to użytkownik zapisujący we własnej przeglądarce to,
+co i tak widzi — zautomatyzowane. Granica z S5 nienaruszona.
+
+Przepływ:
+1. Użytkownik otwiera stronę wykładu w Firefoksie (zalogowany).
+2. Rozszerzenie wykrywa stronę mp.pl/konferencje i parsuje dane Next.js (`__NEXT_DATA__`).
+3. Wyciąga: tytuł, konferencję, sesję, prelegenta (z tytułem naukowym), listę slajdów,
+   czasy, URL-e ORYGINAŁÓW.
+4. Pobiera slajdy w kontekście przeglądarki (ORYGINAŁY z adst.mp.pl, nie proxy q75 —
+   pełna jakość pod S6/VLM).
+5. Przekazuje pliki + manifest do mediaforge przez Native Messaging (JSON przez stdio,
+   host zarejestrowany w rejestrze Windows).
+6. mediaforge podłącza slajdy REUŻYWAJĄC istniejącego attach-slides (rozszerzenie jest tylko
+   nowym ŹRÓDŁEM dla tego samego mechanizmu podłączania — nie drugą ścieżką).
+
+## Ocena trudności: to ETAP, nie feature-branch
+
+Realny koszt jest większy, niż sugeruje "mały companion extension":
+- Osobny kodebase w innym stacku (JavaScript/WebExtension + manifest + parser __NEXT_DATA__).
+- Native Messaging na Windows = hydraulika: wpis w rejestrze → manifest hosta → proces
+  czytający JSON przez stdio (4-bajtowy prefiks długości) → komponent odbiorczy w mediaforge.
+  Instalacja dwuczłonowa (rozszerzenie + rejestracja hosta) — instalator/skrypt.
+- Kruchość wobec zmian struktury strony mp.pl (parser __NEXT_DATA__ związany z DOM/danymi;
+  zmiana po stronie mp.pl cicho psuje rozszerzenie do czasu poprawki).
+- Dystrybucja rozszerzenia spoza AMO (podpis unlisted albo tryb deweloperski).
+Szacunek: rozmiar pełnego etapu (jak S3/S4), z debugowaniem Native Messaging na żywym Windows.
+
+## Korekty do pierwotnej propozycji (gdyby wracała)
+
+- Pobierać ORYGINAŁ (source_image_url z manifestu), nie proxy-URL confmages (q75, przeskalowany).
+  Proxy-URL zapisać co najwyżej informacyjnie.
+- NIE budować rozdmuchanej struktury modułów (manifest_parser/normalize/download/attach/mapper
+  jako osobne pliki) — architektura na wyrost dla jednego profilu. Start: rozszerzenie (JS) +
+  jeden moduł odbiorczy w mediaforge reużywający attach-slides.
+- Sekcja "slides" w metadata.json JUŻ ISTNIEJE (feat/attach-slides: filename/index/timestamp_s).
+  Nowe pola (name, source_image_url, downloaded_at) DOKLEIĆ do istniejącego schematu, nie
+  projektować od zera. slide_transcript_mapper należy do S6, nie do tego modułu.
+- Profil mp.pl (extract_next_data / extract_lecture_metadata / extract_slides) daje też prefill
+  metadanych materiału (tytuł, prelegent, sesja, konferencja, data) — spójne z source_profiles
+  z S5.
+
+## Powiązane: definicja celu S6 (z tej dyskusji — najlepsze dotąd sformułowanie)
+
+Mapa slajd↔czas (timestamp z nazwy/manifestu) + timestampy segmentów whisper = notatka per
+slajd, docelowy produkt S6:
+
+    ## Slajd 5 — Diagnostyka różnicowa
+    Czas: 00:07:30–00:10:15
+    ![Slajd 5](slides/slide_005.png)
+    ### Komentarz prowadzącego
+    (streszczenie fragmentu transkryptu z tego zakresu)
+    ### Najważniejsze punkty
+    - ...
+
+To jest precyzyjniejsza definicja S6 niż ogólne "VLM/analiza slajdów" — przenieść do ROADMAP S6.
+
+## Rekomendowana sekwencja
+
+1. TERAZ (po powrocie do 5090): użyć attach-slides w praktyce na 2-3 realnych wykładach mp.pl
+   (rozszerzenie typu Image Downloader ściąga obrazy z karty → "Podłącz slajdy"). To zweryfikuje
+   całą wartość końcową ZANIM zainwestujesz w automatyzację.
+2. DECYZJA na podstawie (1): jeśli ręczny zapis boli wystarczająco → companion extension jako
+   osobny etap. Jeśli półautomat wystarcza → zostaje jak jest.
+3. S6 buduje na mapie slajd↔czas niezależnie od tego, jak slajdy trafiły do biblioteki.
+
+### ROZWIĄZANE: streszczenia długich materiałów (było: ~488 s timeout)
+Przyczyna: NIE bug w kodzie. Joby #36-#38 szły z procesu GUI sprzed pulla fixów
+(fix/summary-thinking-budget + fix/summary-timeout) — stary timeout/brak /no_think w pamięci
+procesu, mimo że kod na dysku był już naprawiony. Dodatkowo fix/summary-timeout był wtedy
+NIEZMERGOWANY (stąd brak linii diagnostycznej, co zmyliło trop). Po czystym pull + świeżym
+uruchomieniu: 2h materiał (~79 tys. znaków) streszcza się w 158 s, jeden request do gatewaya
+(log LiteLLM: pojedynczy POST 200 OK — retry nigdy nie było), timeout 600 s, /no_think aktywny.
+LEKCJA: po merge fixu zamknąć i uruchomić GUI od nowa przed testem (uv run bierze kod ze startu).
+
+### feat/summary-chunking (map-reduce) — następny krok jakościowy
+24.5k tokenów w oknie 32k to jazda blisko krawędzi; 3h konferencja przebije okno. Docelowo:
+transkrypt cięty po segmentach whisper na kawałki ~20 min → streszczenia cząstkowe (map) →
+sklejenie i streszczenie finalne (reduce). Postęp per kawałek przez istniejący jobs.progress;
+częściowa praca nie przepada; jakość na długich rośnie ("lost in the middle" znika). Nie
+ratunek (po naprawie bug-a ~488s materiały do ~3h przejdą jednym wywołaniem), lecz właściwa
+architektura długich streszczeń.
