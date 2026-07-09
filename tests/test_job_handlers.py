@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import urllib.error
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -365,3 +366,183 @@ def test_summarize_enqueue_refused_without_transcript(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match=r"[Tt]ranskryp"):
         enqueue_summarize(store, JobStore(db), rec_id, local_model=_LOCAL, cloud_model=_CLOUD)
     assert JobStore(db).list_jobs() == []
+
+
+# ── Streszczenie map-reduce (długi materiał, atrapa transportu liczy wywołania) ───
+
+
+def _seed_multi(
+    store: RecordingStore, lib: Path, title: str, texts: list[str], *, cloud_ok: bool = False
+) -> tuple[int, Path]:
+    """Materiał z transkryptem o wielu segmentach (z offsetami czasu) — wejście map-reduce."""
+    folder = lib / title
+    meta = MaterialMetadata(
+        title=title,
+        created_at="t",
+        audio_path=f"{title}.wav",
+        transcript_status="done",
+        transcript_json=f"{title}.json",
+        cloud_ok=cloud_ok,
+    )
+    write_metadata(folder, meta)
+    transcription = [
+        {"text": t, "offsets": {"from": i * 60_000, "to": (i * 60 + 59) * 1000}}
+        for i, t in enumerate(texts)
+    ]
+    (folder / f"{title}.json").write_text(
+        json.dumps({"transcription": transcription}), encoding="utf-8"
+    )
+    return store.upsert_material(folder, read_metadata(folder)), folder
+
+
+def _mr_client(
+    *,
+    max_tokens: int = 4096,
+    fail_fragment: int | None = None,
+    truncate_fragments: tuple[int, ...] = (),
+) -> tuple[SummaryClient, list[dict[str, object]]]:
+    """Klient map-reduce: liczy wywołania, opcjonalnie wywala/ucina wybrany fragment.
+
+    Odpowiedź „S{n}" (n = numer wywołania) pozwala testom rozróżnić mapę (S1..SN) od reduce
+    (ostatnie wywołanie). ``fail_fragment``/``truncate_fragments`` celują w konkretny fragment po
+    treści promptu (a nie po numerze wywołania), więc są odporne na retry kolejki.
+    """
+    payloads: list[dict[str, object]] = []
+
+    def transport(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> bytes:
+        data = json.loads(body)
+        payloads.append(data)
+        user = data["messages"][1]["content"]
+        if fail_fragment is not None and f"Fragment {fail_fragment}/" in user:
+            raise urllib.error.URLError("boom")
+        truncated = any(f"Fragment {f}/" in user for f in truncate_fragments)
+        usage = {"completion_tokens": max_tokens if truncated else 10}
+        return json.dumps(
+            {"choices": [{"message": {"content": f"S{len(payloads)}"}}], "usage": usage}
+        ).encode("utf-8")
+
+    client = SummaryClient(
+        SummaryConfig(base_url="http://gw:4000", max_tokens=max_tokens), transport
+    )
+    return client, payloads
+
+
+def _register_summary(queue: JobQueue, store: RecordingStore, client: SummaryClient) -> None:
+    queue.register(
+        JOB_SUMMARIZE,
+        make_summarize_handler(
+            store, client, local_model=_LOCAL, cloud_model=_CLOUD, chunk_chars=120
+        ),
+    )
+
+
+def test_summarize_single_chunk_one_call_no_parts(tmp_path: Path) -> None:
+    """Krótki materiał (jeden kawałek) → DOKŁADNIE 1 wywołanie, brak summary_parts.md (zgodność)."""
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, folder = _seed_multi(store, tmp_path / "lib", "Short", ["krótki materiał"])
+    client, payloads = _mr_client()
+
+    queue = JobQueue(JobStore(db), lanes=DEFAULT_LANES, routes=DEFAULT_ROUTES)
+    _register_summary(queue, store, client)
+    enqueue_summarize(store, JobStore(db), rec_id, local_model=_LOCAL, cloud_model=_CLOUD)
+    queue.process_pending()
+
+    assert len(payloads) == 1  # jedna ścieżka, jeden request, zero reduce
+    assert not (folder / "summary_parts.md").exists()
+    assert (folder / "summary.md").read_text(encoding="utf-8-sig").strip() == "S1"
+    assert read_metadata(folder).summary_parts_path is None
+
+
+def test_summarize_map_reduce_writes_parts_and_summary(tmp_path: Path) -> None:
+    """3 kawałki → 4 wywołania (3 map + 1 reduce); parts ma 3 sekcje; summary.md = reduce."""
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, folder = _seed_multi(store, tmp_path / "lib", "Long", ["a" * 100, "b" * 100, "c" * 100])
+    client, payloads = _mr_client()
+
+    queue = JobQueue(JobStore(db), lanes=DEFAULT_LANES, routes=DEFAULT_ROUTES)
+    _register_summary(queue, store, client)
+    enqueue_summarize(store, JobStore(db), rec_id, local_model=_LOCAL, cloud_model=_CLOUD)
+    queue.process_pending()
+
+    assert len(payloads) == 4  # 3 map + 1 reduce
+    # Sufiks /no_think obecny w KAŻDYM wywołaniu (map i reduce).
+    assert all(p["messages"][0]["content"].endswith("/no_think") for p in payloads)  # type: ignore[index]
+    parts = (folder / "summary_parts.md").read_text(encoding="utf-8-sig")
+    assert "## Część 1/3" in parts and "## Część 3/3" in parts
+    assert "S1" in parts and "S3" in parts  # treści cząstkowe
+    assert (folder / "summary.md").read_text(encoding="utf-8-sig").strip() == "S4"  # reduce
+    meta = read_metadata(folder)
+    assert meta.summary_status == "done" and meta.summary_parts_path == "summary_parts.md"
+    # Round-trip: ścieżka parts przeżywa rescan (jak summary_path).
+    store.rescan(tmp_path / "lib")
+    again = store.get_material(rec_id)
+    assert again is not None and again[1].summary_parts_path == "summary_parts.md"
+
+
+def test_summarize_map_error_keeps_prior_parts(tmp_path: Path) -> None:
+    """Błąd w kawałku 2 → job error, summary_parts.md zawiera część 1, komunikat wskazuje plik."""
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, folder = _seed_multi(store, tmp_path / "lib", "Boom", ["a" * 100, "b" * 100, "c" * 100])
+    client, _ = _mr_client(fail_fragment=2)
+
+    queue = JobQueue(JobStore(db), lanes=DEFAULT_LANES, routes=DEFAULT_ROUTES)
+    _register_summary(queue, store, client)
+    job_id = enqueue_summarize(store, JobStore(db), rec_id, local_model=_LOCAL, cloud_model=_CLOUD)
+    for _ in range(4):  # wyczerpujemy retry aż do failed
+        queue.process_pending()
+
+    failed = JobStore(db).get(job_id)
+    assert failed is not None and failed.status is JobStatus.FAILED
+    assert failed.error_message and "summary_parts.md" in failed.error_message
+    parts = (folder / "summary_parts.md").read_text(encoding="utf-8-sig")
+    assert "## Część 1/3" in parts and "## Część 2/3" not in parts  # praca 1..1 ocalona
+
+
+def test_summarize_progress_monotonic(tmp_path: Path) -> None:
+    """Progress rośnie monotonicznie 0→1 z krokiem po każdym wywołaniu (map + reduce)."""
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, _folder = _seed_multi(
+        store, tmp_path / "lib", "Prog", ["a" * 100, "b" * 100, "c" * 100]
+    )
+    client, _ = _mr_client()
+    handler = make_summarize_handler(
+        store, client, local_model=_LOCAL, cloud_model=_CLOUD, chunk_chars=120
+    )
+    job_id = enqueue_summarize(store, JobStore(db), rec_id, local_model=_LOCAL, cloud_model=_CLOUD)
+    job = JobStore(db).get(job_id)
+    assert job is not None
+
+    seen: list[float] = []
+    handler(job, seen.append)
+    assert seen == sorted(seen)  # monotoniczny (nie maleje)
+    assert seen[0] == 0.1 and seen[-1] == 1.0
+    assert len(seen) >= 5  # 0.1 start + 3 map + reduce + 1.0
+
+
+def test_summarize_map_truncation_warns_and_annotates(tmp_path: Path, caplog) -> None:  # type: ignore[no-untyped-def]
+    """Ucięcie w kawałku (completion_tokens == max) → warning w logu + adnotacja w parts."""
+    db = _db(tmp_path)
+    store = RecordingStore(db)
+    rec_id, folder = _seed_multi(
+        store, tmp_path / "lib", "Trunc", ["a" * 100, "b" * 100, "c" * 100]
+    )
+    client, _ = _mr_client(truncate_fragments=(2,))
+    handler = make_summarize_handler(
+        store, client, local_model=_LOCAL, cloud_model=_CLOUD, chunk_chars=120
+    )
+    job_id = enqueue_summarize(store, JobStore(db), rec_id, local_model=_LOCAL, cloud_model=_CLOUD)
+    job = JobStore(db).get(job_id)
+    assert job is not None
+
+    with caplog.at_level(logging.WARNING, logger="mediaforge"):
+        handler(job, lambda _p: None)
+    assert "części 2/3" in caplog.text and "ucięte" in caplog.text
+    parts = (folder / "summary_parts.md").read_text(encoding="utf-8-sig")
+    # Adnotacja tylko przy uciętej sekcji (2), nie przy pełnych (1, 3).
+    assert parts.count("mogła zostać ucięta") == 1
+    section_2 = parts.split("## Część 2/3")[1].split("## Część 3/3")[0]
+    assert "mogła zostać ucięta" in section_2

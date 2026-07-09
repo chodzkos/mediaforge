@@ -45,6 +45,9 @@ class MaterialMetadata:
     transcript_srt: str | None = None
     summary_status: str = "none"
     summary_path: str | None = None  # plik streszczenia .md w folderze materiału
+    # Streszczenia cząstkowe (map-reduce długiego materiału) — plik obok summary.md, obecny
+    # TYLKO gdy streszczenie szło ścieżką chunked. Brak = ścieżka pojedyncza (jeden request).
+    summary_parts_path: str | None = None
     # TWARDA GRANICA prywatności (fail-safe): materiał jest wrażliwy, DOPÓKI użytkownik jawnie
     # nie ustawi cloud_ok=True. Brak pola w metadata.json = False (zapomnienie = bezpieczne).
     cloud_ok: bool = False
@@ -79,6 +82,7 @@ class MaterialMetadata:
             "transcript_srt": self.transcript_srt,
             "summary_status": self.summary_status,
             "summary_path": self.summary_path,
+            "summary_parts_path": self.summary_parts_path,
             "cloud_ok": self.cloud_ok,
             "slides": [slide_to_dict(s) for s in self.slides],
             "status": self.status,
@@ -107,6 +111,7 @@ class MaterialMetadata:
             transcript_srt=_opt_str(data.get("transcript_srt")),
             summary_status=str(data.get("summary_status", "none")),
             summary_path=_opt_str(data.get("summary_path")),
+            summary_parts_path=_opt_str(data.get("summary_parts_path")),
             # Brak pola = False: zapomnienie zgody jest bezpieczne (materiał zostaje lokalnie).
             cloud_ok=bool(data.get("cloud_ok", False)),
             slides=tuple(

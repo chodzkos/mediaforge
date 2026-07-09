@@ -265,10 +265,16 @@ uruchomieniu: 2h materiał (~79 tys. znaków) streszcza się w 158 s, jeden requ
 (log LiteLLM: pojedynczy POST 200 OK — retry nigdy nie było), timeout 600 s, /no_think aktywny.
 LEKCJA: po merge fixu zamknąć i uruchomić GUI od nowa przed testem (uv run bierze kod ze startu).
 
-### feat/summary-chunking (map-reduce) — następny krok jakościowy
-24.5k tokenów w oknie 32k to jazda blisko krawędzi; 3h konferencja przebije okno. Docelowo:
-transkrypt cięty po segmentach whisper na kawałki ~20 min → streszczenia cząstkowe (map) →
-sklejenie i streszczenie finalne (reduce). Postęp per kawałek przez istniejący jobs.progress;
-częściowa praca nie przepada; jakość na długich rośnie ("lost in the middle" znika). Nie
-ratunek (po naprawie bug-a ~488s materiały do ~3h przejdą jednym wywołaniem), lecz właściwa
-architektura długich streszczeń.
+### ☑ feat/summary-chunking (map-reduce) — ZREALIZOWANE
+24.5k tokenów w oknie 32k to była jazda blisko krawędzi; 3h konferencja przebiłaby okno.
+Dostarczone: transkrypt cięty po granicach segmentów whisper na kawałki (`core/ai/chunking.py`,
+próg `summary_chunk_chars`, domyślnie 24000 zn.) → streszczenia cząstkowe (map) → sklejenie i
+streszczenie finalne (reduce), hierarchicznie gdy cząstkowe też przebijają próg (reużycie tego
+samego dzielnika, zero nowej logiki podziału). Sufit długości zdjęty strukturalnie. Bonusy wg
+planu: postęp per kawałek przez istniejący `jobs.progress` (monotoniczny), praca częściowa
+zapisywana po każdym kawałku do `summary_parts.md` (nie przepada przy błędzie — komunikat
+wskazuje plik), jakość na długich rośnie ("lost in the middle" znika). **Zgodność:** krótki
+materiał (jeden kawałek) idzie dawną ścieżką 1:1 — jeden request, bez reduce, bez
+`summary_parts.md`. Detekcja ucięcia per wywołanie (`usage.completion_tokens >= max_tokens`, NIE
+`finish_reason`) → adnotacja w pliku + warning w logu, bez wywalania joba. Trasa/prywatność bez
+zmian (rozstrzygana raz na job; map i reduce tą samą, dozwoloną trasą).

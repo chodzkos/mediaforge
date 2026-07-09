@@ -8,18 +8,36 @@ oznacza job jako błędny (status + komunikat). Bez Qt — GUI tylko odpytuje st
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
+from mediaforge.core.ai.chunking import Chunk, split_segments
 from mediaforge.core.ai.routing import ModelRoute, assert_route_allowed, resolve_route
-from mediaforge.core.ai.summarize import SummaryClient, read_transcript_text
-from mediaforge.core.ai.transcribe import TranscribeOptions, TranscriptionBackend
+from mediaforge.core.ai.summarize import (
+    TRUNCATED_MARK,
+    GatewayError,
+    SummaryClient,
+    SummaryResult,
+    map_prompt,
+    part_section,
+    read_transcript_segments,
+    reduce_parts,
+    summary_start_line,
+)
+from mediaforge.core.ai.transcribe import Segment, TranscribeOptions, TranscriptionBackend
+from mediaforge.core.config import DEFAULT_SUMMARY_CHUNK_CHARS
 from mediaforge.core.engines.download_engine import DownloaderEngine
 from mediaforge.core.engines.import_engine import ImporterEngine
 from mediaforge.core.jobs.store import Job, JobStore
-from mediaforge.core.library.material import write_metadata
+from mediaforge.core.library.material import MaterialMetadata, write_metadata
 from mediaforge.core.library.recordings import RecordingStore
+
+logger = logging.getLogger("mediaforge")
+
+SUMMARY_FILENAME = "summary.md"
+SUMMARY_PARTS_FILENAME = "summary_parts.md"
 
 # Typy zadań (job_type) używane przez kolejkę.
 JOB_TRANSCRIBE = "transcribe"
@@ -99,20 +117,39 @@ def summarize_lane(route: ModelRoute) -> str:
     return IO_LANE if route.is_cloud else GPU_LANE
 
 
+def _write_human_md(path: Path, text: str) -> None:
+    """Zapis pliku .md czytanego przez człowieka z BOM (utf-8-sig).
+
+    BOM WYŁĄCZNIE dla plików otwieranych w zewnętrznych aplikacjach (summary.md /
+    summary_parts.md w Calibre/czytnikach windowsowych, które bez BOM zgadują cp1250 → krzaki
+    w polskich znakach). NIE dla metadata.json / transcript.json (BOM łamie parsery JSON,
+    RFC 8259) ani .srt (pisze je whisper-cli).
+    """
+    path.write_text(text, encoding="utf-8-sig")
+
+
 def make_summarize_handler(
     store: RecordingStore,
     client: SummaryClient,
     *,
     local_model: str | None,
     cloud_model: str | None,
+    chunk_chars: int = DEFAULT_SUMMARY_CHUNK_CHARS,
 ) -> _Handler:
     """Handler streszczenia: materiał → resolve_route → assert → gateway → summary.md + statusy.
 
+    Długość zdejmowana strukturalnie (map-reduce): transkrypt cięty na kawałki po granicach
+    segmentów whispera (:func:`split_segments`, próg ``chunk_chars``). Jeden kawałek → ścieżka
+    POJEDYNCZA (jeden request, bez reduce, bez ``summary_parts.md``) — pełna zgodność z dawnym
+    zachowaniem krótkich materiałów. Wiele kawałków → MAP (streszczenie każdego, zapis częściowy
+    do ``summary_parts.md`` po każdym) i REDUCE (sklejenie w jedno ``summary.md``, hierarchicznie
+    gdy cząstkowe też przekraczają próg).
+
     Egzekucja granicy prywatności jest podwójna: :func:`resolve_route` wybiera trasę wg
     ``cloud_ok`` materiału, a :func:`assert_route_allowed` (ostatnia linia obrony tuż przed
-    wysyłką) blokuje wrażliwy materiał na trasie chmurowej. Zapis: ``summary.md`` w folderze
-    materiału (źródło prawdy) + ``summary_status='done'`` + ścieżka w metadanych; ``replace``
-    na istniejących metadanych nie zeruje pozostałych pól.
+    wysyłką) blokuje wrażliwy materiał na trasie chmurowej — trasa rozstrzygana RAZ na job, więc
+    wszystkie wywołania map i reduce idą tą samą, dozwoloną trasą. ``replace`` na istniejących
+    metadanych nie zeruje pozostałych pól.
     """
 
     def handler(job: Job, progress: _ProgressCb) -> None:
@@ -131,21 +168,140 @@ def make_summarize_handler(
         assert_route_allowed(route, cloud_ok=meta.cloud_ok)  # ostatnia linia obrony
 
         progress(0.1)
-        text = read_transcript_text(folder / meta.transcript_json)
-        summary = client.summarize(text, route)  # GatewayError → job.error z base_url
-        summary_path = folder / "summary.md"
-        # BOM (utf-8-sig) WYŁĄCZNIE dla plików czytanych przez człowieka w zewnętrznych
-        # aplikacjach: summary.md otwiera się w Calibre/czytnikach windowsowych, które bez BOM
-        # zgadują cp1250 → krzaki w polskich znakach. NIE dodawaj BOM do transcript.json /
-        # metadata.json (łamie parsery JSON, RFC 8259) ani .srt (pisze je whisper-cli).
-        summary_path.write_text(summary, encoding="utf-8-sig")
+        segments = read_transcript_segments(folder / meta.transcript_json)
+        chunks = split_segments(segments, max_chars=chunk_chars)
+        parts_file = folder / SUMMARY_PARTS_FILENAME
 
-        updated = replace(meta, summary_status="done", summary_path=summary_path.name)
-        write_metadata(folder, updated)  # metadata.json = źródło prawdy
-        store.upsert_material(folder, updated)  # indeks SQLite
+        if len(chunks) <= 1:
+            _finish_single(store, client, route, folder, meta, chunks, parts_file, progress)
+            return
+
+        summary_parts = _run_map(client, route, folder, chunks, parts_file, progress)
+        final = _run_reduce(client, route, chunk_chars, summary_parts, progress)
+        text = f"{final.text}\n\n{TRUNCATED_MARK}" if final.truncated else final.text
+        _write_human_md(folder / SUMMARY_FILENAME, text)
+        _persist_summary(store, folder, meta, parts_name=SUMMARY_PARTS_FILENAME)
         progress(1.0)
 
     return handler
+
+
+def _finish_single(
+    store: RecordingStore,
+    client: SummaryClient,
+    route: ModelRoute,
+    folder: Path,
+    meta: MaterialMetadata,
+    chunks: list[Chunk],
+    parts_file: Path,
+    progress: _ProgressCb,
+) -> None:
+    """Ścieżka pojedyncza (0/1 kawałek): jeden request, identyczna z dawnym zachowaniem.
+
+    Sprzątamy ewentualny stary ``summary_parts.md`` (materiał, który wcześniej szedł chunked,
+    a teraz mieści się w jednym kawałku) i zerujemy ``summary_parts_path`` w metadanych.
+    """
+    text = chunks[0].text if chunks else ""
+    summary = client.summarize(text, route)  # GatewayError → job.error z base_url
+    parts_file.unlink(missing_ok=True)
+    _write_human_md(folder / SUMMARY_FILENAME, summary)
+    _persist_summary(store, folder, meta, parts_name=None)
+    progress(1.0)
+
+
+def _run_map(
+    client: SummaryClient,
+    route: ModelRoute,
+    folder: Path,
+    chunks: list[Chunk],
+    parts_file: Path,
+    progress: _ProgressCb,
+) -> list[Segment]:
+    """Faza MAP: streszcz każdy kawałek, dopisz do ``summary_parts.md`` po każdym (praca częściowa).
+
+    Zapis częściowy chroni pracę: błąd w kawałku ``k`` propaguje się (job error), ale sekcje
+    ``1..k-1`` są już na dysku, a komunikat wskazuje plik. Zwraca streszczenia cząstkowe jako
+    segmenty (tekst + zakres czasu kawałka) — wejście fazy REDUCE.
+    """
+    total = len(chunks)
+    logger.info(
+        summary_start_line(
+            sum(len(c.text) for c in chunks), route.model, client.config.timeout, chunks=total
+        )
+    )
+    sections: list[str] = []
+    parts: list[Segment] = []
+    for chunk in chunks:
+        try:
+            res = client.run(map_prompt(chunk.index, total, chunk), route)
+        except GatewayError as exc:
+            raise GatewayError(
+                f"{exc} (streszczenia cząstkowe 1..{chunk.index - 1} zachowane w {parts_file.name})"
+            ) from exc
+        if res.truncated:
+            logger.warning(
+                "Streszczenie części %s/%s prawdopodobnie ucięte (limit summary_max_tokens=%s) — "
+                "rozważ zwiększenie limitu.",
+                chunk.index,
+                total,
+                client.config.max_tokens,
+            )
+        sections.append(part_section(chunk.index, total, chunk, res.text, truncated=res.truncated))
+        _write_human_md(parts_file, "".join(sections))  # przepisujemy całość → jeden BOM na starcie
+        parts.append(Segment(start=chunk.start, end=chunk.end, text=res.text))
+        # MAP zajmuje pasmo [0.1, 0.7]; reszta [0.7, 1.0] zostaje na REDUCE.
+        progress(0.1 + 0.6 * chunk.index / total)
+    return parts
+
+
+def _run_reduce(
+    client: SummaryClient,
+    route: ModelRoute,
+    chunk_chars: int,
+    parts: list[Segment],
+    progress: _ProgressCb,
+) -> SummaryResult:
+    """Faza REDUCE: sklej streszczenia cząstkowe w jedno (hierarchicznie, gdy trzeba).
+
+    Postęp w paśmie [0.7, 1.0]: monotoniczny, krok po każdym wywołaniu reduce (liczba wywołań
+    zależy od głębokości hierarchii, nieznanej z góry — stąd asymptotyczne zbliżanie do 1.0,
+    domknięte ``progress(1.0)`` przez wołającego).
+    """
+    reduce_done = 0
+
+    def reduce_call(user_content: str) -> SummaryResult:
+        nonlocal reduce_done
+        res = client.run(user_content, route)
+        reduce_done += 1
+        progress(min(0.99, 0.7 + 0.29 * reduce_done / (reduce_done + 1)))
+        return res
+
+    final, _calls = reduce_parts(parts, chunk_chars=chunk_chars, call=reduce_call)
+    if final.truncated:
+        logger.warning(
+            "Finalne streszczenie prawdopodobnie ucięte (limit summary_max_tokens=%s) — "
+            "rozważ zwiększenie limitu.",
+            client.config.max_tokens,
+        )
+    return final
+
+
+def _persist_summary(
+    store: RecordingStore,
+    folder: Path,
+    meta: MaterialMetadata,
+    *,
+    parts_name: str | None,
+) -> None:
+    """Zapis statusów streszczenia: metadata.json (źródło prawdy) + indeks SQLite (round-trip)."""
+    updated = replace(
+        meta,
+        summary_status="done",
+        summary_path=SUMMARY_FILENAME,
+        summary_parts_path=parts_name,
+    )
+    write_metadata(folder, updated)
+    store.upsert_material(folder, updated)
 
 
 def enqueue_summarize(
