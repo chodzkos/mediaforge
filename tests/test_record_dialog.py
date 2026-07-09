@@ -501,9 +501,7 @@ def test_collision_rename_uses_new_name(
     assert (out / "Nagranie" / "metadata.json").exists()  # stary materiał nietknięty
 
 
-def test_collision_dialog_disables_rename_for_taken_name(
-    qtbot: QtBot, qapp: QApplication
-) -> None:
+def test_collision_dialog_disables_rename_for_taken_name(qtbot: QtBot, qapp: QApplication) -> None:
     """M14: walidacja na żywo — wpisanie zajętej/pustej nazwy wyszarza „Zapisz pod nową nazwą"."""
     taken = {"zajeta"}
     dlg = rd._CollisionDialog("Nagranie", "Nagranie (2)", name_taken=lambda n: n in taken)
