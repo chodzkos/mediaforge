@@ -52,6 +52,11 @@ _SUMMARY_LANGUAGE_KEY = "summary_language"  # język streszczenia (domyślnie pl
 _SUMMARY_MAX_TOKENS_KEY = "summary_max_tokens"  # limit tokenów odpowiedzi streszczenia
 _SUMMARY_TIMEOUT_KEY = "summary_timeout_sec"  # timeout żądania do gatewaya (domyślnie 600 s)
 _SUMMARY_PROMPT_SUFFIX_KEY = "summary_prompt_suffix"  # sufiks system-promptu (qwen3: /no_think)
+_SUMMARY_CHUNK_CHARS_KEY = "summary_chunk_chars"  # próg podziału transkryptu (map-reduce)
+
+# ~8k tokenów promptu — komfortowo w oknie 32k z miejscem na wyjście; powyżej tego progu
+# streszczenie idzie ścieżką map-reduce (kawałki po granicach segmentów), poniżej: jeden request.
+DEFAULT_SUMMARY_CHUNK_CHARS = 24_000
 
 
 def load(on_dirty: Callable[[], None] | None = None) -> Config:
@@ -234,6 +239,20 @@ def get_summary_timeout(cfg: Config) -> float:
     if isinstance(value, int | float) and value > 0:
         return float(value)
     return 600.0
+
+
+def get_summary_chunk_chars(cfg: Config) -> int:
+    """Próg podziału transkryptu na kawałki map-reduce (domyślnie 24000 znaków).
+
+    Transkrypt dłuższy niż ten próg jest cięty na kawałki po granicach segmentów whispera
+    (map -> reduce); krótszy idzie jedną, dotychczasową ścieżką (jeden request). 24000 znaków
+    to ~8k tokenów promptu — mieści się w oknie 32k z zapasem na wyjście i wewnętrzne
+    rozumowanie modelu. Wartość <= 0 (błędna) spada na default.
+    """
+    value = cfg.get(_SUMMARY_CHUNK_CHARS_KEY)
+    if isinstance(value, int) and value > 0:
+        return value
+    return DEFAULT_SUMMARY_CHUNK_CHARS
 
 
 def get_record_preroll_sec(cfg: Config) -> int:

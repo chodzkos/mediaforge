@@ -8,13 +8,19 @@ from collections.abc import Mapping
 
 import pytest
 
+from mediaforge.core.ai.chunking import Chunk, Segment
 from mediaforge.core.ai.routing import ModelRoute, RouteKind
 from mediaforge.core.ai.summarize import (
     GatewayError,
     SummaryClient,
     SummaryConfig,
+    SummaryResult,
     build_summary_request,
+    is_truncated,
+    map_prompt,
     parse_summary_response,
+    reduce_parts,
+    reduce_prompt,
     summary_start_line,
 )
 
@@ -125,6 +131,90 @@ def test_summary_start_line_contains_input_size() -> None:
     assert "~85 tys. znaków" in line
     assert "ollama/qwen3:27b" in line
     assert "600 s" in line
+
+
+def test_summary_start_line_with_chunks_reports_parts_and_per_call_timeout() -> None:
+    """Ścieżka map-reduce (chunks > 1): linia dokłada „X części" i timeout „na wywołanie"."""
+    line = summary_start_line(85_000, "ollama/qwen3:27b", 600.0, chunks=7)
+    assert "7 części" in line
+    assert "600 s/wywołanie" in line
+    # chunks == 1 → dawny format (bez „części"), zgodność ścieżki pojedynczej.
+    assert "części" not in summary_start_line(2_000, "m", 600.0, chunks=1)
+
+
+# ── Map-reduce: detekcja ucięcia, prompty, hierarchiczny reduce ───────────────
+
+
+def test_is_truncated_only_when_budget_reached() -> None:
+    """Niepusta treść + completion_tokens >= max → ucięta; poniżej limitu → nie."""
+    assert is_truncated({"usage": {"completion_tokens": 4096}}, 4096) is True
+    assert is_truncated({"usage": {"completion_tokens": 100}}, 4096) is False
+    assert is_truncated({}, 4096) is False  # brak usage → brak sygnału
+
+
+def test_run_returns_truncated_flag() -> None:
+    """``run`` zwraca treść + flagę ucięcia (completion_tokens == max_tokens)."""
+
+    def transport(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> bytes:
+        return json.dumps(
+            {
+                "choices": [{"message": {"content": "Streszczenie fragmentu."}}],
+                "usage": {"completion_tokens": 4096},
+            }
+        ).encode("utf-8")
+
+    client = SummaryClient(SummaryConfig(base_url="http://gw:4000", max_tokens=4096), transport)
+    result = client.run("streść to", _ROUTE)
+    assert result == SummaryResult(text="Streszczenie fragmentu.", truncated=True)
+
+
+def test_map_prompt_carries_fragment_index_and_time_range() -> None:
+    """Prompt mapy niesie „Fragment i/N", zakres czasu kawałka i jego treść."""
+    chunk = Chunk(index=2, start=630.0, end=1305.0, text="TREŚĆ FRAGMENTU")
+    prompt = map_prompt(2, 5, chunk)
+    assert "Fragment 2/5" in prompt
+    assert "00:10-00:21" in prompt  # 630 s = 00:10, 1305 s = 00:21
+    assert "TREŚĆ FRAGMENTU" in prompt
+
+
+def test_reduce_prompt_wraps_body() -> None:
+    """Prompt reduce prosi o spójne sklejenie i niesie ciało (streszczenia cząstkowe)."""
+    prompt = reduce_prompt("STRESZCZENIA CZĄSTKOWE")
+    assert "spójne" in prompt and "chronologię" in prompt
+    assert "STRESZCZENIA CZĄSTKOWE" in prompt
+
+
+def test_reduce_parts_single_round_one_call() -> None:
+    """Streszczenia cząstkowe mieszczące się w budżecie → jeden finalny reduce (1 wywołanie)."""
+    calls: list[str] = []
+
+    def call(user_content: str) -> SummaryResult:
+        calls.append(user_content)
+        return SummaryResult(text="FINAŁ", truncated=False)
+
+    parts = [Segment(0.0, 60.0, "streszczenie 1"), Segment(60.0, 120.0, "streszczenie 2")]
+    final, num = reduce_parts(parts, chunk_chars=1000, call=call)
+    assert num == 1 and final.text == "FINAŁ"
+    # Ciało reduce zawiera oba streszczenia z nagłówkami czasu (chronologia zachowana).
+    assert "streszczenie 1" in calls[0] and "streszczenie 2" in calls[0]
+
+
+def test_reduce_parts_hierarchical_multiple_rounds() -> None:
+    """Cząstkowe przekraczające budżet → runda pośrednia (>1 wywołań), zbiega do jednego wyniku."""
+    call_count = 0
+
+    def call(user_content: str) -> SummaryResult:
+        nonlocal call_count
+        call_count += 1
+        # Każdy reduce zwraca krótki wynik → kolejna runda się skleja i zbiega.
+        return SummaryResult(text="s", truncated=False)
+
+    # 4 długie części, budżet mały → pierwsza runda grupuje po granicach, druga skleja.
+    parts = [Segment(i * 60.0, i * 60.0 + 59.0, "z" * 80) for i in range(4)]
+    final, num = reduce_parts(parts, chunk_chars=120, call=call)
+    assert num > 1  # hierarchiczny: więcej niż jedno wywołanie
+    assert final.text == "s"
+    assert call_count == num
 
 
 def test_parse_ok() -> None:

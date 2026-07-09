@@ -27,8 +27,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from mediaforge.core.ai.chunking import Chunk, split_segments
 from mediaforge.core.ai.routing import ModelRoute
-from mediaforge.core.ai.transcribe import parse_whisper_json
+from mediaforge.core.ai.transcribe import Segment, parse_whisper_json
 
 # Transport wstrzykiwalny (seam do testów bez sieci): URL + body + nagłówki + timeout → bajty.
 Transport = Callable[[str, bytes, Mapping[str, str], float], bytes]
@@ -38,6 +39,19 @@ _CHAT_PATH = "/v1/chat/completions"
 
 class GatewayError(Exception):
     """Gateway niedostępny lub zwrócił nieużyteczną odpowiedź (czytelny komunikat do jobs)."""
+
+
+# Adnotacja doklejana przy prawdopodobnym ucięciu treści (limit summary_max_tokens osiągnięty).
+# Ucięte streszczenie jest wciąż użyteczne — NIE wywalamy joba, tylko oznaczamy je w pliku.
+TRUNCATED_MARK = "⚠ [treść mogła zostać ucięta]"
+
+
+@dataclass(frozen=True, slots=True)
+class SummaryResult:
+    """Wynik jednego wywołania gatewaya: treść + flaga prawdopodobnego ucięcia (do adnotacji)."""
+
+    text: str
+    truncated: bool
 
 
 @dataclass(slots=True)
@@ -138,6 +152,17 @@ def _budget_exhausted(data: Mapping[str, Any], max_tokens: int) -> bool:
     return isinstance(completion, int) and completion >= max_tokens
 
 
+def is_truncated(data: Any, max_tokens: int) -> bool:
+    """Czy NIEpusta treść jest prawdopodobnie ucięta (osiągnięto limit ``max_tokens``).
+
+    Jedyny wiarygodny sygnał to ``usage.completion_tokens >= max_tokens`` — ``finish_reason``
+    przy tym ucięciu raportuje ``stop`` (zmierzone na żywo), więc na nim NIE polegamy. Wołane
+    dopiero po :func:`parse_summary_response` (treść już niepusta), więc równość budżetu = ucięcie
+    w trakcie pisania treści (nie: cały budżet zjedzony na rozumowanie — to odrzuca parser wyżej).
+    """
+    return isinstance(data, Mapping) and _budget_exhausted(data, max_tokens)
+
+
 def read_transcript_text(transcript_json: Path) -> str:
     """Wyciąga pełny tekst z transkryptu whisper.cpp (``--output-json``) — wejście streszczenia.
 
@@ -147,6 +172,105 @@ def read_transcript_text(transcript_json: Path) -> str:
     """
     data = json.loads(transcript_json.read_text(encoding="utf-8"))
     return parse_whisper_json(data).text
+
+
+def read_transcript_segments(transcript_json: Path) -> list[Segment]:
+    """Wczytuje SEGMENTY transkryptu whisper.cpp (start/end/text) — wejście dzielnika map-reduce.
+
+    W przeciwieństwie do :func:`read_transcript_text` (sklejony tekst) zwraca segmenty z
+    granicami czasu, których potrzebuje :func:`~mediaforge.core.ai.chunking.split_segments`,
+    by ciąć materiał wyłącznie na granicach zdań i znać zakres czasu każdego kawałka.
+    """
+    data = json.loads(transcript_json.read_text(encoding="utf-8"))
+    return list(parse_whisper_json(data).segments)
+
+
+# ── Map-reduce: prompty per kawałek + hierarchiczny reduce (Qt-free, testowalne) ──────
+
+
+def _hhmm(seconds: float) -> str:
+    """Znacznik czasu ``HH:MM`` z sekund (na nagłówki czasowe kawałków; ujemne -> 00:00)."""
+    total = max(0, int(seconds))
+    return f"{total // 3600:02d}:{(total % 3600) // 60:02d}"
+
+
+def _range(start: float, end: float) -> str:
+    """Zakres czasu kawałka ``HH:MM-HH:MM`` (zwykły łącznik ASCII — bez confusables w RUF)."""
+    return f"{_hhmm(start)}-{_hhmm(end)}"
+
+
+def map_prompt(index: int, total: int, chunk: Chunk) -> str:
+    """Wiadomość usera dla fazy MAP: streszczenie pojedynczego fragmentu (z jego zakresem czasu).
+
+    System-prompt (język + ``prompt_suffix``) jest ten sam co w ścieżce pojedynczej — tu tylko
+    treść usera niesie kontekst „który to fragment i z jakiego czasu", by model nie mylił porządku.
+    """
+    return (
+        f"Fragment {index}/{total} wykładu (czas {_range(chunk.start, chunk.end)}):\n\n"
+        f"{chunk.text}\n\n"
+        "Streść ten fragment po polsku: kluczowe tezy, 1-3 akapity."
+    )
+
+
+def reduce_prompt(body: str) -> str:
+    """Wiadomość usera dla fazy REDUCE: sklej streszczenia cząstkowe w jedno spójne."""
+    return (
+        "Poniżej streszczenia kolejnych fragmentów wykładu. Połącz je w jedno spójne "
+        "streszczenie po polsku (bez powtórzeń, zachowaj chronologię):\n\n"
+        f"{body}"
+    )
+
+
+def part_section(index: int, total: int, chunk: Chunk, text: str, *, truncated: bool) -> str:
+    """Sekcja pliku ``summary_parts.md`` dla jednego kawałka (nagłówek czasowy + treść).
+
+    Praca częściowa jest zapisywana po każdym kawałku — przy ``truncated`` doklejamy adnotację,
+    żeby czytelnik wiedział, że ta akurat sekcja mogła się urwać na limicie tokenów.
+    """
+    header = f"## Część {index}/{total} ({_range(chunk.start, chunk.end)})"
+    body = f"{text}\n\n{TRUNCATED_MARK}" if truncated else text
+    return f"{header}\n\n{body}\n"
+
+
+def _labeled(seg: Segment) -> Segment:
+    """Segment z tekstem poprzedzonym znacznikiem czasu — nagłówek przetrwa sklejenie w reduce."""
+    return Segment(start=seg.start, end=seg.end, text=f"[{_range(seg.start, seg.end)}] {seg.text}")
+
+
+def reduce_parts(
+    parts: list[Segment],
+    *,
+    chunk_chars: int,
+    call: Callable[[str], SummaryResult],
+) -> tuple[SummaryResult, int]:
+    """Hierarchiczny reduce: łączy streszczenia cząstkowe aż zostanie jeden wynik.
+
+    Każdy ``Segment`` w ``parts`` niesie streszczenie fragmentu (``text``) i jego zakres czasu
+    (``start``/``end``). Grupowanie robi TEN SAM :func:`split_segments` co przy mapie (zero nowej
+    logiki podziału): gdy sklejone streszczenia mieszczą się w ``chunk_chars`` -> jeden finalny
+    reduce; gdy nie -> runda pośrednia (reduce każdej grupy) i powtórka nad krótszymi wynikami.
+
+    ``call`` dostaje gotową wiadomość usera (przez :func:`reduce_prompt`) i zwraca wynik z flagą
+    ucięcia. Zwraca finalny :class:`SummaryResult` oraz liczbę wykonanych wywołań reduce (do
+    rozliczenia postępu). Pętla jest ograniczona liczbą części + zapas — streszczenia z każdą
+    rundą krótsze, więc zbiega; limit tylko zabezpiecza przed patologicznym brakiem zbieżności.
+    """
+    labeled = [_labeled(p) for p in parts]
+    calls = 0
+    for _ in range(len(parts) + 2):
+        groups = split_segments(labeled, chunk_chars)
+        if len(groups) <= 1:
+            body = groups[0].text if groups else ""
+            return call(reduce_prompt(body)), calls + 1
+        next_level: list[Segment] = []
+        for group in groups:
+            res = call(reduce_prompt(group.text))
+            calls += 1
+            next_level.append(Segment(start=group.start, end=group.end, text=res.text))
+        labeled = [_labeled(s) for s in next_level]
+    # Brak zbieżności (patologiczne wejście) -> jeden finalny reduce nad wszystkim, co zostało.
+    body = " ".join(s.text for s in labeled)
+    return call(reduce_prompt(body)), calls + 1
 
 
 def _is_timeout(exc: BaseException) -> bool:
@@ -161,12 +285,21 @@ def _is_timeout(exc: BaseException) -> bool:
     return isinstance(getattr(exc, "reason", None), TimeoutError)
 
 
-def summary_start_line(char_count: int, model: str, timeout: float) -> str:
+def summary_start_line(
+    char_count: int, model: str, timeout: float, *, chunks: int | None = None
+) -> str:
     """Linia diagnostyczna startu streszczenia (do LogView): rozmiar wejścia, model, timeout.
 
     Rozmiar w tysiącach znaków (``~N tys.``) — następna diagnoza długiego materiału ma liczby
-    od ręki, bez ręcznego liczenia transkryptu.
+    od ręki, bez ręcznego liczenia transkryptu. ``chunks`` (gdy > 1) sygnalizuje ścieżkę
+    map-reduce: dokłada „X części", a timeout jest liczony NA WYWOŁANIE (długi materiał idzie
+    wieloma requestami). Brak ``chunks`` = ścieżka pojedyncza (dawny format zachowany 1:1).
     """
+    if chunks is not None and chunks > 1:
+        return (
+            f"Streszczanie: ~{char_count // 1000} tys. znaków transkryptu, {chunks} części, "
+            f"model {model}, timeout {int(timeout)} s/wywołanie"
+        )
     return (
         f"Streszczanie: ~{char_count // 1000} tys. znaków transkryptu, "
         f"model {model}, timeout {int(timeout)} s"
@@ -194,16 +327,17 @@ class SummaryClient:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
         return headers
 
-    def summarize(self, text: str, route: ModelRoute) -> str:
-        """POST do gatewaya i zwrot treści; błąd transportu → :class:`GatewayError` (dwa powody).
+    def _post(self, user_content: str, route: ModelRoute) -> Any:
+        """POST wiadomości usera; zwrot sparsowanego JSON-a albo :class:`GatewayError`.
 
+        Wspólny rdzeń ścieżki pojedynczej (:meth:`summarize`) i map-reduce (:meth:`run`).
         Rozdzielamy dwa powody błędu transportu, bo prowadzą do różnych działań użytkownika:
         **timeout** (gateway ciężko liczy długi materiał) → komunikat o limicie czasu z podpowiedzią
         „zwiększ summary_timeout"; **błąd połączenia** (gateway nie wstał / zły endpoint) →
         komunikat NAZYWAJĄCY gateway (``Gateway niedostępny``). Mylenie ich sugerowało padnięty
         gateway, gdy ten tylko wolno liczył.
         """
-        payload = build_summary_request(text, route, self.config)
+        payload = build_summary_request(user_content, route, self.config)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         url = _endpoint(self.config.base_url)
         try:
@@ -217,9 +351,28 @@ class SummaryClient:
                 ) from exc
             raise GatewayError(f"Gateway niedostępny ({self.config.base_url}): {exc}") from exc
         try:
-            data = json.loads(raw)
+            return json.loads(raw)
         except (ValueError, TypeError) as exc:
             raise GatewayError(
                 f"Gateway zwrócił niepoprawny JSON ({self.config.base_url}): {exc}"
             ) from exc
-        return parse_summary_response(data, max_tokens=self.config.max_tokens)
+
+    def summarize(self, text: str, route: ModelRoute) -> str:
+        """POST transkryptu i zwrot treści — ścieżka POJEDYNCZA (jeden request, bez reduce).
+
+        Zachowanie identyczne jak dotąd: krótki materiał (jeden kawałek) idzie tędy 1:1, więc
+        stary format ``summary.md`` i błędy transportu nie zmieniają się.
+        """
+        return parse_summary_response(self._post(text, route), max_tokens=self.config.max_tokens)
+
+    def run(self, user_content: str, route: ModelRoute) -> SummaryResult:
+        """POST dowolnej wiadomości (map/reduce) → treść + flaga ucięcia (do adnotacji plików).
+
+        Jak :meth:`summarize`, ale zwraca też informację o prawdopodobnym ucięciu treści na
+        limicie ``summary_max_tokens`` (:func:`is_truncated`) — map-reduce oznacza takie sekcje
+        w ``summary_parts.md`` / ``summary.md`` zamiast wywalać job (ucięte streszczenie jest
+        wciąż użyteczne).
+        """
+        data = self._post(user_content, route)
+        text = parse_summary_response(data, max_tokens=self.config.max_tokens)
+        return SummaryResult(text=text, truncated=is_truncated(data, self.config.max_tokens))
