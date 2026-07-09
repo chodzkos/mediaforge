@@ -14,6 +14,7 @@ ddagrab nie zna okien.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, cast
@@ -101,12 +102,23 @@ class _CollisionDialog(QDialog):
     Kit nie ma generycznego dialogu wyboru (tylko file-dialogi), więc budujemy własny
     QDialog — motyw dziedziczy z ``ThemeManager`` (świadomie NIE natywny ``QMessageBox``).
     Domyślny (Enter) = „Zapisz pod nową nazwą" — bezpieczny, nie traci danych.
+
+    ``name_taken`` = predykat „czy ta nazwa jest już zajęta" (dialog NIE zna biblioteki —
+    seam do testów). Wpisanie zajętej/pustej nazwy wyszarza „Zapisz pod nową nazwą", żeby
+    RENAME nie mógł cicho wjechać w cudzy materiał (M14).
     """
 
-    def __init__(self, name: str, proposed: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        proposed: str,
+        name_taken: Callable[[str], bool],
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Nazwa już zajęta")
         self._choice = CollisionChoice.CANCEL
+        self._name_taken = name_taken
 
         root = QVBoxLayout(self)
         root.addWidget(QLabel(f"Materiał «{name}» już istnieje."))
@@ -114,20 +126,38 @@ class _CollisionDialog(QDialog):
         self._name_edit.setToolTip("Nazwa dla nowego nagrania (przy zapisie pod nową nazwą)")
         root.addWidget(self._name_edit)
 
+        # Notka pod polem — widoczna tylko, gdy wpisana nazwa też jest zajęta.
+        self._name_warn = QLabel("Ta nazwa też jest zajęta")
+        self._name_warn.setStyleSheet(f"color: {current_palette().red};")
+        self._name_warn.setVisible(False)
+        root.addWidget(self._name_warn)
+
         row = QHBoxLayout()
         overwrite_btn = QPushButton("Nadpisz")
         overwrite_btn.setToolTip("Usuń stary materiał i zapisz nowy pod tą nazwą")
         overwrite_btn.clicked.connect(self._choose_overwrite)
-        rename_btn = QPushButton("Zapisz pod nową nazwą")
-        rename_btn.setDefault(True)
-        rename_btn.clicked.connect(self._choose_rename)
+        self._rename_btn = QPushButton("Zapisz pod nową nazwą")
+        self._rename_btn.setDefault(True)
+        self._rename_btn.clicked.connect(self._choose_rename)
         cancel_btn = QPushButton("Anuluj")
         cancel_btn.clicked.connect(self.reject)
         row.addWidget(overwrite_btn)
         row.addStretch(1)
         row.addWidget(cancel_btn)
-        row.addWidget(rename_btn)
+        row.addWidget(self._rename_btn)
         root.addLayout(row)
+
+        # Walidacja na żywo: zajęta/pusta nazwa wyszarza „Zapisz pod nową nazwą" (i Enter, bo to
+        # przycisk domyślny). Start: ``proposed`` z ``next_free_title`` jest wolny → aktywny.
+        self._name_edit.textChanged.connect(self._revalidate)
+        self._revalidate()
+
+    def _revalidate(self) -> None:
+        name = self._name_edit.text().strip()
+        taken = self._name_taken(name) if name else False
+        self._rename_btn.setEnabled(bool(name) and not taken)
+        # Pusta nazwa: przycisk nieaktywny, ale bez notki „zajęta" (pusto jest samo-oczywiste).
+        self._name_warn.setVisible(taken)
 
     def _choose_overwrite(self) -> None:
         self._choice = CollisionChoice.OVERWRITE
@@ -572,7 +602,12 @@ class RecordDialog(QDialog):
 
     def _resolve_collision(self, out_dir: Path, title: str) -> tuple[CollisionChoice, str]:
         """Pyta użytkownika przy zajętej nazwie; zwraca (wybór, nazwa). Seam do testów."""
-        dlg = _CollisionDialog(title, next_free_title(out_dir, title), self)
+        dlg = _CollisionDialog(
+            title,
+            next_free_title(out_dir, title),
+            name_taken=lambda n: material_exists(out_dir, n),
+            parent=self,
+        )
         dlg.exec()
         return dlg.choice(), dlg.chosen_name()
 
@@ -593,6 +628,10 @@ class RecordDialog(QDialog):
                 self._log.append_line(f"Nadpisuję materiał «{title}»", "paused")
             else:  # RENAME
                 title = new_name or next_free_title(out_dir, title)
+                # Guard obronny: gdyby dialog kiedyś puścił zajętą nazwę, spadamy do gwarantowanie
+                # wolnej — nowe segmenty nie wjadą cicho w istniejący materiał (M14).
+                if material_exists(out_dir, title):
+                    title = next_free_title(out_dir, title)
                 self._title_edit.setText(title)
 
         work_dir = work_dir_for(out_dir, title)  # jedno źródło konwencji (podkatalog _work)
