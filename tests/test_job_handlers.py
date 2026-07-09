@@ -7,6 +7,7 @@ import logging
 import urllib.error
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -559,6 +560,10 @@ def _is_map_payload(payload: dict[str, object]) -> bool:
     return "Fragment " in messages[1]["content"]  # type: ignore[index]
 
 
+def _max_tokens(payload: dict[str, object]) -> int:
+    return cast(int, payload["max_tokens"])
+
+
 def test_summarize_reduce_uses_separate_budget(tmp_path: Path) -> None:
     """Reduce ma OSOBNY budżet: map = summary_max_tokens (4096), reduce = 8192 per wywołanie."""
     db = _db(tmp_path)
@@ -574,8 +579,8 @@ def test_summarize_reduce_uses_separate_budget(tmp_path: Path) -> None:
     map_payloads = [p for p in payloads if _is_map_payload(p)]
     reduce_payloads = [p for p in payloads if not _is_map_payload(p)]
     assert len(map_payloads) == 3 and len(reduce_payloads) == 1
-    assert all(p["max_tokens"] == 4096 for p in map_payloads)  # mapy: mały cel „1-3 akapity"
-    assert reduce_payloads[0]["max_tokens"] == 8192  # reduce: osobny, większy budżet
+    assert all(_max_tokens(p) == 4096 for p in map_payloads)  # mapy: mały cel „1-3 akapity"
+    assert _max_tokens(reduce_payloads[0]) == 8192  # reduce: osobny, większy budżet
 
 
 def test_summarize_reduce_window_guard_trims_and_warns(tmp_path: Path, caplog) -> None:  # type: ignore[no-untyped-def]
@@ -597,4 +602,4 @@ def test_summarize_reduce_window_guard_trims_and_warns(tmp_path: Path, caplog) -
     assert "budżet wyjścia przycięty" in caplog.text
     reduce_payloads = [p for p in payloads if not _is_map_payload(p)]
     # Przy dużym promptcie reduce budżet zszedł poniżej pełnego 8192 (guard okna zadziałał).
-    assert any(p["max_tokens"] < 8192 for p in reduce_payloads)
+    assert any(_max_tokens(p) < 8192 for p in reduce_payloads)
