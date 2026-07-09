@@ -16,10 +16,13 @@ from pathlib import Path
 from mediaforge.core.ai.chunking import Chunk, split_segments
 from mediaforge.core.ai.routing import ModelRoute, assert_route_allowed, resolve_route
 from mediaforge.core.ai.summarize import (
+    SAFE_CONTEXT_TOKENS,
     TRUNCATED_MARK,
     GatewayError,
     SummaryClient,
     SummaryResult,
+    estimate_tokens,
+    fit_reduce_budget,
     map_prompt,
     part_section,
     read_transcript_segments,
@@ -27,7 +30,7 @@ from mediaforge.core.ai.summarize import (
     summary_start_line,
 )
 from mediaforge.core.ai.transcribe import Segment, TranscribeOptions, TranscriptionBackend
-from mediaforge.core.config import DEFAULT_SUMMARY_CHUNK_CHARS
+from mediaforge.core.config import DEFAULT_SUMMARY_CHUNK_CHARS, DEFAULT_SUMMARY_REDUCE_MAX_TOKENS
 from mediaforge.core.engines.download_engine import DownloaderEngine
 from mediaforge.core.engines.import_engine import ImporterEngine
 from mediaforge.core.jobs.store import Job, JobStore
@@ -135,6 +138,7 @@ def make_summarize_handler(
     local_model: str | None,
     cloud_model: str | None,
     chunk_chars: int = DEFAULT_SUMMARY_CHUNK_CHARS,
+    reduce_max_tokens: int = DEFAULT_SUMMARY_REDUCE_MAX_TOKENS,
 ) -> _Handler:
     """Handler streszczenia: materiał → resolve_route → assert → gateway → summary.md + statusy.
 
@@ -177,7 +181,7 @@ def make_summarize_handler(
             return
 
         summary_parts = _run_map(client, route, folder, chunks, parts_file, progress)
-        final = _run_reduce(client, route, chunk_chars, summary_parts, progress)
+        final = _run_reduce(client, route, chunk_chars, summary_parts, progress, reduce_max_tokens)
         text = f"{final.text}\n\n{TRUNCATED_MARK}" if final.truncated else final.text
         _write_human_md(folder / SUMMARY_FILENAME, text)
         _persist_summary(store, folder, meta, parts_name=SUMMARY_PARTS_FILENAME)
@@ -260,8 +264,14 @@ def _run_reduce(
     chunk_chars: int,
     parts: list[Segment],
     progress: _ProgressCb,
+    reduce_max_tokens: int,
 ) -> SummaryResult:
     """Faza REDUCE: sklej streszczenia cząstkowe w jedno (hierarchicznie, gdy trzeba).
+
+    Reduce ma OSOBNY budżet wyjścia (``reduce_max_tokens``, > mapowego) — pisze najdłużej, a jego
+    prompt jest mały, więc w oknie zostaje zapas. Guard okna (:func:`fit_reduce_budget`) przycina
+    ten budżet, gdy sam prompt (dużo streszczeń cząstkowych) urósłby z wyjściem ponad ``num_ctx`` —
+    lepiej krótsze wyjście niż ciche wypadnięcie promptu za okno.
 
     Postęp w paśmie [0.7, 1.0]: monotoniczny, krok po każdym wywołaniu reduce (liczba wywołań
     zależy od głębokości hierarchii, nieznanej z góry — stąd asymptotyczne zbliżanie do 1.0,
@@ -271,7 +281,17 @@ def _run_reduce(
 
     def reduce_call(user_content: str) -> SummaryResult:
         nonlocal reduce_done
-        res = client.run(user_content, route)
+        budget = fit_reduce_budget(user_content, reduce_max_tokens)
+        if budget < reduce_max_tokens:
+            logger.warning(
+                "Reduce: prompt duży (~%s tok.) — budżet wyjścia przycięty %s→%s, by zmieścić się "
+                "w oknie (~%s tok.).",
+                estimate_tokens(user_content),
+                reduce_max_tokens,
+                budget,
+                SAFE_CONTEXT_TOKENS,
+            )
+        res = client.run(user_content, route, max_tokens=budget)
         reduce_done += 1
         progress(min(0.99, 0.7 + 0.29 * reduce_done / (reduce_done + 1)))
         return res

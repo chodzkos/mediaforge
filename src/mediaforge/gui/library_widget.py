@@ -99,6 +99,7 @@ class LibraryWidget(QWidget):
                 local_model=cfg_mod.get_summary_model_local(self._config),
                 cloud_model=cfg_mod.get_summary_model_cloud(self._config),
                 chunk_chars=cfg_mod.get_summary_chunk_chars(self._config),
+                reduce_max_tokens=cfg_mod.get_summary_reduce_max_tokens(self._config),
             ),
         )
         self._queue.register(
