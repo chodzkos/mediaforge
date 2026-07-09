@@ -501,6 +501,64 @@ def test_collision_rename_uses_new_name(
     assert (out / "Nagranie" / "metadata.json").exists()  # stary materiał nietknięty
 
 
+def test_collision_dialog_disables_rename_for_taken_name(
+    qtbot: QtBot, qapp: QApplication
+) -> None:
+    """M14: walidacja na żywo — wpisanie zajętej/pustej nazwy wyszarza „Zapisz pod nową nazwą"."""
+    taken = {"zajeta"}
+    dlg = rd._CollisionDialog("Nagranie", "Nagranie (2)", name_taken=lambda n: n in taken)
+    qtbot.addWidget(dlg)
+
+    # Stan startowy: proponowana wolna nazwa → przycisk aktywny, notka ukryta.
+    assert dlg._rename_btn.isEnabled()
+    assert not dlg._name_warn.isVisibleTo(dlg)
+
+    dlg._name_edit.setText("zajeta")  # zajęta → wyłączony + notka
+    assert not dlg._rename_btn.isEnabled()
+    assert dlg._name_warn.isVisibleTo(dlg)
+
+    dlg._name_edit.setText("wolna")  # znów wolna → aktywny, notka znika
+    assert dlg._rename_btn.isEnabled()
+    assert not dlg._name_warn.isVisibleTo(dlg)
+
+    dlg._name_edit.setText("")  # pusta → wyłączony (Enter nie zaakceptuje), bez notki „zajęta"
+    assert not dlg._rename_btn.isEnabled()
+    assert not dlg._name_warn.isVisibleTo(dlg)
+
+
+def test_collision_rename_revalidates_taken_name(
+    dialog: rd.RecordDialog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, qtbot: QtBot
+) -> None:
+    """M14: guard w _on_start — gdyby dialog puścił zajętą nazwę, tytuł spada na wolną.
+
+    Nowe segmenty NIE wjeżdżają w istniejący (cudzy) materiał.
+    """
+    db_path = tmp_path / "library.sqlite3"
+    _fake_engine(dialog, db_path)
+    out = tmp_path / "out"
+    _seed_material(out, "Nagranie")  # kolizja startowa
+    other = _seed_material(out, "Zajeta")  # nazwa zwrócona z RENAME też jest zajęta
+    (other / "marker.txt").write_text("cudze", encoding="utf-8")
+    dialog._out_dir.set(str(out))
+    dialog._title_edit.setText("Nagranie")
+    dialog._sys_audio.setChecked(False)
+    # Dialog (hipotetycznie) zwraca zajętą nazwę „Zajeta" — guard musi ją odrzucić.
+    monkeypatch.setattr(
+        dialog, "_resolve_collision", lambda o, t: (rd.CollisionChoice.RENAME, "Zajeta")
+    )
+    dialog._on_start()
+
+    assert dialog._title_edit.text() == "Zajeta (2)"  # spadek na pierwszą wolną
+    assert dialog._session is not None
+    # Cudzy materiał „Zajeta" nietknięty (segmenty nowej sesji nie wjechały w jego folder).
+    assert (other / "marker.txt").read_text(encoding="utf-8") == "cudze"
+
+    _stop_and_wait(dialog, qtbot)
+    rows = RecordingStore(db_path).list_recordings(RecordingStatus.RECORDED)
+    titles = {r.title for r in rows}
+    assert "Zajeta (2)" in titles  # zapisane pod wolną nazwą, nie wjechało w „Zajeta"
+
+
 def test_out_of_library_warning_toggles(dialog: rd.RecordDialog, tmp_path: Path) -> None:
     # Fixture: default_recordings_dir = tmp_path/"out". Wewnątrz → notka ukryta, poza → widoczna.
     dialog._out_dir.set(str(tmp_path / "out" / "sesja"))
