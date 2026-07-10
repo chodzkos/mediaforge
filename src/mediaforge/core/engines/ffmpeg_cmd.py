@@ -319,6 +319,10 @@ def estimate_size_mb(quality: QualityOption, seconds: float, audio: AudioConfig)
 
     Czysto orientacyjne (target bitrate x czas), do podglądu w GUI.
     """
+    # audio_only bez żadnego urządzenia: nagranie w ogóle nie ruszy (brak -i → FFmpeg pada
+    # natychmiast, M3), więc podgląd „0 MB" jest uczciwy — zamiast domyślać się 1 śladu 160 kb/s.
+    if quality.audio_only and not _audio_devices(audio):
+        return 0.0
     video_kbps = 0 if quality.audio_only else (quality.bitrate_kbps or 0)
     track_count = len(_audio_devices(audio)) or (1 if quality.audio_only else 0)
     audio_kbps = audio.audio_bitrate_kbps * (1 if audio.mix else track_count)
