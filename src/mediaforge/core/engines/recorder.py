@@ -69,6 +69,7 @@ class RecorderProcess(Protocol):
 
 ProcessFactory = Callable[[list[str], Path | None], RecorderProcess]
 ConcatRunner = Callable[[list[str]], int]
+ProbeRunner = Callable[[list[str]], str]  # ffprobe → stdout (pomiar długości pliku wynikowego)
 
 
 class _FfmpegProcess:
@@ -132,6 +133,22 @@ def _default_concat_runner(command: list[str]) -> int:
         check=False,
     )
     return proc.returncode
+
+
+def _default_probe_runner(command: list[str]) -> str:
+    """Uruchamia ffprobe, zwraca stdout ("" przy błędzie — pomiar długości nie jest krytyczny)."""
+    try:
+        proc = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=NO_WINDOW_FLAGS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout or ""
 
 
 _SLUG_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
@@ -384,6 +401,7 @@ class RecorderEngine:
     store: RecordingStore | None = None
     process_factory: ProcessFactory = _default_process_factory
     concat_runner: ConcatRunner = _default_concat_runner
+    probe_runner: ProbeRunner = _default_probe_runner  # pomiar duration z pliku (ffprobe, M17)
     name: str = "recorder"
 
     def can_handle(self, source: Source) -> bool:
@@ -458,7 +476,7 @@ class RecorderEngine:
         is_audio = session.quality.audio_only
         video_path = None if is_audio else output
         audio_path = output if is_audio else None
-        duration = round(session.elapsed_seconds, 1)
+        duration = self._probe_duration(output, session.elapsed_seconds)
 
         # Ten sam układ co import: metadata.json (źródło prawdy) + wpis w SQLite.
         meta = MaterialMetadata(
@@ -482,6 +500,29 @@ class RecorderEngine:
                 "recoverable": str(plan.recoverable),
             },
         )
+
+    def _probe_duration(self, output: Path, elapsed_fallback: float) -> float:
+        """Długość materiału z pliku wynikowego (ffprobe), nie z wallclocka legów (M17).
+
+        ``session.elapsed_seconds`` niesie głowę pre-rolla i martwy czas po ``stop_gracefully()``
+        (pomiar 9.2: dryf ~2,7 s / 18 s), a licznik GUI pokazuje ``elapsed - preroll``. Pomiar z
+        gotowego pliku pokrywa się z licznikiem (realna długość treści) i domyka rozjazd.
+
+        Import lokalny — ``import_engine`` importuje ``recorder.safe_filename``, więc import
+        modułowy byłby cyklem. Gdy ffprobe padnie / zwróci śmieć (brak binarki, dziwny kontener)
+        → fallback na wallclock (gorsze oszacowanie). Pomiar długości NIE może wywrócić
+        finalizacji — plik wynikowy już powstał, materiał ma być zapisany.
+        """
+        from mediaforge.core.engines.import_engine import (
+            build_probe_duration_command,
+            parse_duration,
+        )
+
+        try:
+            probed = parse_duration(self.probe_runner(build_probe_duration_command(output)))
+        except Exception:
+            probed = None
+        return round(probed, 1) if probed is not None else round(elapsed_fallback, 1)
 
     def acquire(
         self,
