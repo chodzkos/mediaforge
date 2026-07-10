@@ -11,6 +11,7 @@ from mediaforge.core.engines import segments
 from mediaforge.core.engines.base import AcquireOptions, SourceKind
 from mediaforge.core.engines.base import Source as EngineSource
 from mediaforge.core.engines.ffmpeg_cmd import PRESETS, AudioConfig, CaptureSource
+from mediaforge.core.engines.import_engine import build_probe_duration_command
 from mediaforge.core.engines.recorder import (
     RecorderEngine,
     RecorderSession,
@@ -20,7 +21,7 @@ from mediaforge.core.engines.recorder import (
     next_free_title,
 )
 from mediaforge.core.library.db import Database
-from mediaforge.core.library.material import MaterialMetadata, write_metadata
+from mediaforge.core.library.material import MaterialMetadata, read_metadata, write_metadata
 from mediaforge.core.library.recordings import RecordingStatus, RecordingStore
 
 _ENCODERS = {"hevc_nvenc": True, "libx265": True, "libx264": True}
@@ -288,6 +289,85 @@ def test_finalize_success_removes_work_dir(tmp_path: Path) -> None:
     assert (tmp_path / "out" / "Nagranie" / "Nagranie.mkv").is_file()
     assert not session.work_dir.exists()
     assert len(store.list_recordings(RecordingStatus.RECORDED)) == 1
+
+
+# ── M17: duration z pliku wynikowego (ffprobe), nie z wallclocka legów ─────────
+
+
+def _fake_probe(value: str, captured: list[list[str]]) -> Callable[[list[str]], str]:
+    def runner(command: list[str]) -> str:
+        captured.append(command)
+        return value
+
+    return runner
+
+
+def _finalized_session(tmp_path: Path, probe_runner: Callable[[list[str]], str]) -> RecorderEngine:
+    """Silnik z atrapą procesu/concat/probe; zwraca engine po skonstruowaniu (bez finalize)."""
+    return RecorderEngine(
+        encoders=_ENCODERS,
+        process_factory=_fake_factory([]),
+        concat_runner=_fake_concat([]),
+        probe_runner=probe_runner,
+    )
+
+
+def test_finalize_duration_from_ffprobe(tmp_path: Path) -> None:
+    """duration = długość z ffprobe pliku wynikowego (17.34 → 17.3), nie wallclock legów."""
+    captured: list[list[str]] = []
+    engine = _finalized_session(tmp_path, _fake_probe("17.34\n", captured))
+    out = tmp_path / "out"
+    session = engine.new_session(
+        source=CaptureSource(),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["standard"],
+        work_dir=out / "Nagranie" / "_work",
+    )
+    session.start()
+    session.stop()
+    engine.finalize_to_library(session, title="Nagranie", output_dir=out)
+
+    output_file = out / "Nagranie" / "Nagranie.mkv"
+    assert read_metadata(out / "Nagranie").duration == 17.3
+    assert captured == [build_probe_duration_command(output_file)]  # komenda z buildera
+
+
+def test_finalize_duration_fallback_when_probe_empty(tmp_path: Path) -> None:
+    """ffprobe zwraca śmieć/"" → fallback na wallclock (round(elapsed_seconds, 1))."""
+    engine = _finalized_session(tmp_path, lambda _cmd: "")
+    out = tmp_path / "out"
+    session = engine.new_session(
+        source=CaptureSource(),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["standard"],
+        work_dir=out / "Nagranie" / "_work",
+    )
+    session.start()
+    session.stop()
+    engine.finalize_to_library(session, title="Nagranie", output_dir=out)
+
+    assert read_metadata(out / "Nagranie").duration == round(session.elapsed_seconds, 1)
+
+
+def test_finalize_duration_fallback_when_probe_raises(tmp_path: Path) -> None:
+    """Runner ffprobe rzuca → finalizacja NIE pada (plik już jest); fallback na wallclock."""
+
+    def boom(_cmd: list[str]) -> str:
+        raise OSError("ffprobe niedostępny")
+
+    engine = _finalized_session(tmp_path, boom)
+    out = tmp_path / "out"
+    session = engine.new_session(
+        source=CaptureSource(),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["standard"],
+        work_dir=out / "Nagranie" / "_work",
+    )
+    session.start()
+    session.stop()
+    engine.finalize_to_library(session, title="Nagranie", output_dir=out)  # nie rzuca
+
+    assert read_metadata(out / "Nagranie").duration == round(session.elapsed_seconds, 1)
 
 
 def test_invalid_transitions_raise(tmp_path: Path) -> None:
