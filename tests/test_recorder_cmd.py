@@ -292,6 +292,14 @@ def test_estimate_size_grows_with_time() -> None:
     assert 0 < small < big
 
 
+def test_estimate_zero_for_audio_only_without_devices() -> None:
+    """M19: audio_only bez urządzeń → podgląd 0 MB (nagranie i tak nie ruszy)."""
+    q = PRESETS["audio_only"]
+    assert estimate_size_mb(q, 3600, AudioConfig(system_audio=False, microphone=False)) == 0.0
+    # Z jednym urządzeniem szacuje normalnie (>0) — zachowanie bez zmian.
+    assert estimate_size_mb(q, 3600, AudioConfig(system_audio=True, system_device="Mikrofon")) > 0
+
+
 def test_presets_cover_required_set() -> None:
     labels = {opt.label for opt in PRESETS.values()}
     assert labels == {"Ekonomiczny", "Standard", "Wysoka", "Archiwum", "Tylko audio"}
