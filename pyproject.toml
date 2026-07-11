@@ -13,7 +13,7 @@ dependencies = [
     # Wspólny standard GUI — paleta, ThemeManager, titlebar DWM, dialogi, widgety.
     # Pin do SHA (tag w komentarzu; tag jest mutowalny). Podniesienie wersji = osobny commit chore: + testy.
     # platformdirs wchodzi tranzytywnie z kitu (jego config.py go używa).
-    "chodzkos-gui-kit[qt] @ git+https://github.com/chodzkos/gui-kit@09938082b2b5d2250fb1adfb2fd238a8199366ec",  # v0.5.0
+    "chodzkos-gui-kit[qt] @ git+https://github.com/chodzkos/gui-kit@44e639881a7e86600efabe74ec0c8dc8c0114fd2",  # v0.5.1
     "keyring>=25",           # sekrety w systemowym magazynie poświadczeń
     "yt-dlp>=2026.7.4",        # pobieranie (etap późny); luźny pin — patrz CLAUDE.md
     "typer>=0.12",           # CLI
