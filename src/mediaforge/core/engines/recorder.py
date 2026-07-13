@@ -153,6 +153,23 @@ def _default_probe_runner(command: list[str]) -> str:
 
 _SLUG_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
+# Nazwa pliku z końcową sygnaturą statystyk ffmpeg (frame=/fps=/dup=/drop=/speed=) w folderze
+# materiału — jeden odczyt do diagnozy dropów następnego nagrania (bez odtwarzania z pamięci).
+RECORDING_STATS_FILENAME = "recording_stats.txt"
+
+
+def extract_ffmpeg_stats(log_text: str) -> str | None:
+    """Ostatnia linia statystyk ffmpeg (``frame=… fps=… dup=… drop=… speed=…``) z logu.
+
+    FFmpeg nadpisuje wiersz postępu ``\\r`` (bez ``\\n``), więc ``ffmpeg.log`` ma sklejone paczki
+    — tniemy po OBU (``\\r``/``\\n``) i bierzemy ostatni segment zaczynający się od ``frame=``
+    (końcowa linia legu). Przy kilku legach (pauza/wznowienie dopisują) bierzemy najświeższą.
+    """
+    candidates = [
+        seg.strip() for seg in re.split(r"[\r\n]", log_text) if seg.strip().startswith("frame=")
+    ]
+    return candidates[-1] if candidates else None
+
 
 def safe_filename(name: str, *, fallback: str = "nagranie") -> str:
     """Sanityzuje nazwę pliku pod Windows (usuwa znaki zabronione, przycina kropki/spacje)."""
@@ -468,6 +485,10 @@ class RecorderEngine:
                 f"segmenty zostają w {session.work_dir}"
             )
 
+        # Końcowe statystyki ffmpeg → recording_stats.txt w folderze materiału PRZED sprzątnięciem
+        # ``_work`` (log żyje w ``_work``). Diagnostyka: sygnatura dropów zostaje przy materiale.
+        self._write_recording_stats(session.work_dir, material_dir)
+
         # Sukces potwierdzony (plik istnieje, size>0) → segmenty w ``_work`` są już redundantne.
         # KLUCZOWE: sprzątamy DOPIERO po weryfikacji concat; przy jakimkolwiek błędzie wcześniej
         # ``_work`` zostaje nietknięty (ręczny odzysk). ``plan.segments`` to już policzona lista.
@@ -500,6 +521,22 @@ class RecorderEngine:
                 "recoverable": str(plan.recoverable),
             },
         )
+
+    @staticmethod
+    def _write_recording_stats(work_dir: Path, material_dir: Path) -> None:
+        """Zapisuje końcową linię statystyk ffmpeg do ``recording_stats.txt`` (best-effort).
+
+        Log (``_work/ffmpeg.log``) zaraz zniknie z ``_work``, więc końcową sygnaturę
+        ``frame=/dup=/drop=/speed=`` przenosimy obok materiału. Odpornie: brak logu / brak linii
+        statystyk (atrapa, natychmiastowa śmierć) → nic nie piszemy, finalizacja się nie wywraca.
+        """
+        try:
+            log_text = (work_dir / "ffmpeg.log").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+        stats = extract_ffmpeg_stats(log_text)
+        if stats:
+            (material_dir / RECORDING_STATS_FILENAME).write_text(stats + "\n", encoding="utf-8")
 
     def _probe_duration(self, output: Path, elapsed_fallback: float) -> float:
         """Długość materiału z pliku wynikowego (ffprobe), nie z wallclocka legów (M17).

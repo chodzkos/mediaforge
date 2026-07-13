@@ -92,6 +92,33 @@ def test_engine_falls_back_to_build_encoders_without_probe(
     assert dlg._engine.encoders == {"hevc_nvenc": True}
 
 
+def test_encoder_hint_hardware_vs_software(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Notka enkodera: sprzęt → „(GPU)" bez amber; software → „(CPU)…" z amber (GUI nie ukrywa)."""
+    monkeypatch.setattr(cfg_mod, "library_db_path", lambda: tmp_path / "library.sqlite3")
+    monkeypatch.setattr(cfg_mod, "default_recordings_dir", lambda: tmp_path / "out")
+
+    gpu = rd.RecordDialog(ffmpeg_probe={"available": True, "encoders_usable": {"hevc_nvenc": True}})
+    qtbot.addWidget(gpu)
+    assert "hevc_nvenc (GPU)" in gpu._encoder_hint.text()
+    assert gpu._encoder_hint.styleSheet() == ""  # sprzęt → zwykły kolor motywu
+
+    soft = rd.RecordDialog(ffmpeg_probe={"available": True, "encoders_usable": {"libx264": True}})
+    qtbot.addWidget(soft)
+    assert "libx264 (CPU)" in soft._encoder_hint.text()
+    assert "30 fps / 1080p" in soft._encoder_hint.text()
+    assert "color:" in soft._encoder_hint.styleSheet()  # software → amber (degradacja widoczna)
+
+
+def test_encoder_logged_at_start(dialog: rd.RecordDialog, tmp_path: Path) -> None:
+    """Wybrany enkoder trafia do LogView przy starcie nagrania (obserwowalność degradacji)."""
+    proc = _LiveProc()
+    _start_recording_with(dialog, tmp_path, proc)
+    assert "Enkoder: hevc_nvenc (GPU)" in dialog._log.toPlainText()
+    dialog._session = None  # sprzątanie: bramka zamknięcia nie prosi o modal w teardown qtbot
+
+
 def test_full_monitor_has_no_region(dialog: rd.RecordDialog) -> None:
     dialog._mode_combo.setCurrentIndex(0)
     src = dialog._build_capture_source()

@@ -108,6 +108,16 @@ def _mark(ok: bool) -> str:
     return "✓" if ok else "✗"
 
 
+def _compute_cap_below(gpu: dict[str, Any], threshold: float) -> bool:
+    """Czy compute capability GPU < próg (fallback: arch, gdy cc puste na starym sterowniku)."""
+    cc = str(gpu.get("compute_cap", ""))
+    try:
+        return float(cc) < threshold
+    except ValueError:
+        # Stary sterownik nie oddał compute_cap → oceń po arch (Pascal/starsze < 7.5).
+        return str(gpu.get("arch", "")) in ("pascal", "older")
+
+
 def status_line(report: dict[str, Any]) -> str:
     """Zwięzły jednowierszowy status do paska GUI — z tych samych DANYCH co `doctor`.
 
@@ -148,11 +158,21 @@ def render_report(report: dict[str, Any]) -> str:
     ff_av = _mark(ff.get("available", False))
     lines.append(f"FFmpeg:      {ff_av} {ff.get('version', '')}".rstrip())
     lines.append(f"             enkodery: {enc_str}")
+    gpu_info = report.get("gpu", {})
+    # Pascal (cc < 7.5): sterownik ≥610 wymagany przez FFmpeg 8.x/git dla NVENC nie istnieje —
+    # jedyne wyjście to release 7.x, nie 8.x/git. Dopisek TYLKO dla martwego NVENC na takim GPU.
+    pascal_nvenc = gpu_info.get("available") and _compute_cap_below(gpu_info, 7.5)
     for name in broken:
-        lines.append(
+        hint = (
             f"             → {name}: jest w buildzie, nie działa w runtime — sprawdź "
             f"sterownik NVIDIA (FFmpeg 8.x wymaga ≥610)"
         )
+        if name.endswith("nvenc") and pascal_nvenc:
+            hint += (
+                " (Pascal: sterownik ≥610 nie istnieje — zainstaluj FFmpeg 7.x RELEASE "
+                "zamiast 8.x/git)"
+            )
+        lines.append(hint)
     if not ff.get("available", False):
         lines.append(f"             → {_HINTS['ffmpeg']}")
 
