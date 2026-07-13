@@ -197,6 +197,28 @@ def test_check_ffmpeg_usable_probes_only_build_present(monkeypatch: pytest.Monke
     assert result["encoders_usable"]["libx264"] is True
 
 
+def test_check_ffmpeg_probes_amf_and_qsv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AMF (Radeon/APU) i QSV (Intel) sondowane tą samą sondą runtime co NVENC — droga dla 780M."""
+    monkeypatch.setattr(
+        tools,
+        "probe_tool",
+        lambda *a, **k: {"available": True, "version": "8.1", "path": Path("ffmpeg")},
+    )
+    # Build: h264_amf + libx264 obecne (typowy Radeon 780M); NVENC/QSV nieobecne.
+    monkeypatch.setattr(tools, "_run", lambda *a, **k: "V..... h264_amf x\nV..... libx264 y\n")
+    probed: list[str] = []
+
+    def _probe(name: str) -> bool:
+        probed.append(name)
+        return True  # AMF żyje w runtime (spodziewany h264_amf ✓)
+
+    result = tools.check_ffmpeg(probe_encoders=True, probe=_probe)
+    assert result["encoders"]["h264_amf"] is True  # klucz AMF w mapie
+    assert result["encoders"]["h264_qsv"] is False  # QSV nieobecny w tym buildzie
+    assert set(probed) == {"h264_amf", "libx264"}  # sonda TYLKO dla obecnych w buildzie
+    assert result["encoders_usable"]["h264_amf"] is True
+
+
 def test_check_ffmpeg_without_probe_leaves_usable_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """Bez probe_encoders sonda runtime nie biegnie (status bar/testy nie ruszają ffmpeg)."""
     monkeypatch.setattr(
@@ -228,3 +250,48 @@ def test_render_report_marks_build_but_unusable_encoder() -> None:
     assert "hevc_nvenc ✗" in text
     assert "libx264 ✓" in text
     assert "nie działa w runtime" in text  # rozróżnienie build vs runtime w doktorze
+
+
+def test_render_report_pascal_nvenc_hint() -> None:
+    """NVENC martwy + GPU Pascal (cc < 7.5) → dopisek o FFmpeg 7.x release zamiast 8.x/git."""
+    rep = {
+        "ffmpeg": {
+            "available": True,
+            "version": "8.1",
+            "encoders": {"hevc_nvenc": True},
+            "encoders_usable": {"hevc_nvenc": False},
+        },
+        "gpu": {"available": True, "name": "GTX 1070", "compute_cap": "6.1", "arch": "pascal"},
+    }
+    text = report.render_report(rep)
+    assert "hevc_nvenc ✗" in text
+    assert "Pascal: sterownik ≥610 nie istnieje" in text
+    assert "FFmpeg 7.x RELEASE" in text
+
+
+def test_render_report_pascal_hint_from_arch_without_compute_cap() -> None:
+    """Stary sterownik bez compute_cap → ocena po arch (pascal) i tak dopisuje hint Pascala."""
+    rep = {
+        "ffmpeg": {
+            "available": True,
+            "encoders": {"hevc_nvenc": True},
+            "encoders_usable": {"hevc_nvenc": False},
+        },
+        "gpu": {"available": True, "name": "GTX 1070", "compute_cap": "", "arch": "pascal"},
+    }
+    assert "Pascal: sterownik ≥610 nie istnieje" in report.render_report(rep)
+
+
+def test_render_report_no_pascal_hint_on_modern_gpu() -> None:
+    """Nowoczesny GPU (cc ≥ 7.5) z martwym NVENC → hint sterownika BEZ dopisku Pascala."""
+    rep = {
+        "ffmpeg": {
+            "available": True,
+            "encoders": {"hevc_nvenc": True},
+            "encoders_usable": {"hevc_nvenc": False},
+        },
+        "gpu": {"available": True, "name": "RTX 5090", "compute_cap": "12.0", "arch": "blackwell"},
+    }
+    text = report.render_report(rep)
+    assert "nie działa w runtime" in text
+    assert "Pascal" not in text

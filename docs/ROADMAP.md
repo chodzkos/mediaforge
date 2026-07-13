@@ -110,6 +110,14 @@ Obecny pipeline: `hwdownload` → konwersja yuv420p na CPU → nvenc (GPU→RAM�
 **Driver-free WASAPI loopback (dźwięk systemowy bez VB-Cable).**
 ffmpeg na Windows nie ma natywnego WASAPI; dźwięk systemowy wymaga urządzenia loopback dshow (Stereo Mix / wirtualny kabel), które użytkownik musi zainstalować/włączyć. Docelowe: pythonowe przechwytywanie WASAPI loopback (`pyaudiowpatch` albo `soundcard`) → PCM na stdin ffmpeg, bez VB-Cable. Koszt: nowy komponent + wątek + ffmpeg przestaje być jedyną ścieżką audio. Powiązane: `feat/dshow-device-enum` (enum + detekcja loopbacku + hint) łagodzi, ale nie tworzy urządzenia.
 
+### Rekorder — sprzęt / enkodery (ustalone pomiarami)
+
+**Pascal + FFmpeg 8.x/git = NVENC martwy (sterownik); FFmpeg 7.x release działa.**
+GTX 1070 (Pascal, cc 6.1): `hevc_nvenc`/`h264_nvenc` są w buildzie FFmpeg 8.x/git, ale padają przy inicjalizacji — 8.x wymaga sterownika NVIDIA ≥ 610, a taki dla Pascala **nie istnieje** (NVIDIA zamknęła gałąź sterowników). Jedyne wyjście na Pascalu to **FFmpeg 7.x RELEASE** (nie 8.x, nie git). Doctor wykrywa to empirycznie (`probe_encoder` — realna inicjalizacja, nie obecność w buildzie) i przy martwym NVENC + GPU cc < 7.5 dopisuje wprost radę o 7.x. Wybór enkodera nagrania patrzy na `encoders_usable` (runtime), więc NVENC-widmo nie zabija nagrania — schodzi na sprzęt AMF/QSV, a w ostateczności `libx264`.
+
+**libx265 wykluczony z realtime capture (za wolny na CPU).**
+Software-HEVC (`libx265`) nie wyrabia kodowania na żywo przy 60 fps — na słabszym CPU daje ciągłe dropy (zmierzone na 1070, gdy NVENC padł i dawny łańcuch schodził na `libx265` @ natywnej rozdzielczości). Dlatego `libx265` i software-AV1 (`libsvtav1`/`libaom-av1`) są **całkowicie poza łańcuchami realtime**: cały tor sprzętowy (NVENC → AMF → QSV) jest wyczerpywany, a jedyny software-fallback to `libx264 -preset veryfast` z wymuszonym fps ≤ 30 i skalą ≤ 1920 px (bez tego fallback = szarpanie innym kodekiem). `libx265` mógłby wrócić tylko dla przyszłego trybu **re-enkodowania OFFLINE** (nie dla capture na żywo).
+
 ### Rekorder — znane ograniczenia
 
 **Capture okna po tytule — niewspierane.**

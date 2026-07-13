@@ -13,10 +13,12 @@ from mediaforge.core.engines.base import Source as EngineSource
 from mediaforge.core.engines.ffmpeg_cmd import PRESETS, AudioConfig, CaptureSource
 from mediaforge.core.engines.import_engine import build_probe_duration_command
 from mediaforge.core.engines.recorder import (
+    RECORDING_STATS_FILENAME,
     RecorderEngine,
     RecorderSession,
     RecorderState,
     discard_material_dir,
+    extract_ffmpeg_stats,
     material_dir_for,
     next_free_title,
 )
@@ -289,6 +291,82 @@ def test_finalize_success_removes_work_dir(tmp_path: Path) -> None:
     assert (tmp_path / "out" / "Nagranie" / "Nagranie.mkv").is_file()
     assert not session.work_dir.exists()
     assert len(store.list_recordings(RecordingStatus.RECORDED)) == 1
+
+
+# ── Statystyki ffmpeg (końcowa linia frame=/dup=/drop=/speed=) → recording_stats.txt ──
+
+
+def test_extract_ffmpeg_stats_takes_last_progress_line() -> None:
+    # Progres nadpisywany \r (bez \n) — bierzemy ostatni segment „frame=" (końcowa sygnatura legu).
+    log = (
+        "ffmpeg version 8.1\n"
+        "frame=  10 fps= 60 q=28.0 drop=0 speed=1.0x\r"
+        "frame= 900 fps= 60 q=28.0 dup=1 drop=7 speed=0.98x\r"
+    )
+    assert extract_ffmpeg_stats(log) == "frame= 900 fps= 60 q=28.0 dup=1 drop=7 speed=0.98x"
+
+
+def test_extract_ffmpeg_stats_none_without_progress() -> None:
+    assert extract_ffmpeg_stats("brak statystyk, sam błąd urządzenia\n") is None
+    assert extract_ffmpeg_stats("") is None
+
+
+def _stats_factory(stats: str) -> Callable[[list[str], Path | None], _FakeProc]:
+    """Fabryka: tworzy segment I zapisuje ffmpeg.log z linią statystyk (jak realny FFmpeg)."""
+
+    def factory(command: list[str], log_path: Path | None = None) -> _FakeProc:
+        pattern = command[-1]
+        start = int(command[command.index("-segment_start_number") + 1])
+        Path(pattern % start).write_bytes(b"SEGMENT")
+        if log_path is not None:
+            log_path.write_text(f"frame=1 fps=60 drop=0 speed=1x\r{stats}\r", encoding="utf-8")
+        return _FakeProc()
+
+    return factory
+
+
+def test_finalize_writes_recording_stats(tmp_path: Path) -> None:
+    """Końcowa linia statystyk ffmpeg trafia do recording_stats.txt w folderze materiału."""
+    engine = RecorderEngine(
+        encoders=_ENCODERS,
+        process_factory=_stats_factory("frame=900 fps=60 dup=1 drop=7 speed=0.98x"),
+        concat_runner=_fake_concat([]),
+    )
+    out = tmp_path / "out"
+    session = engine.new_session(
+        source=CaptureSource(),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["standard"],
+        work_dir=out / "Nagranie" / "_work",
+    )
+    session.start()
+    session.stop()
+    engine.finalize_to_library(session, title="Nagranie", output_dir=out)
+
+    stats_file = out / "Nagranie" / RECORDING_STATS_FILENAME
+    assert stats_file.is_file()
+    assert "drop=7" in stats_file.read_text(encoding="utf-8")
+    assert not session.work_dir.exists()  # _work sprzątnięte, ale statystyki przeniesione obok
+
+
+def test_finalize_without_stats_line_skips_file(tmp_path: Path) -> None:
+    """Brak linii statystyk w logu (natychmiastowa śmierć) → brak pliku, finalizacja bez błędu."""
+    engine = RecorderEngine(
+        encoders=_ENCODERS,
+        process_factory=_fake_factory([]),  # nie pisze ffmpeg.log
+        concat_runner=_fake_concat([]),
+    )
+    out = tmp_path / "out"
+    session = engine.new_session(
+        source=CaptureSource(),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["standard"],
+        work_dir=out / "Nagranie" / "_work",
+    )
+    session.start()
+    session.stop()
+    engine.finalize_to_library(session, title="Nagranie", output_dir=out)
+    assert not (out / "Nagranie" / RECORDING_STATS_FILENAME).exists()
 
 
 # ── M17: duration z pliku wynikowego (ffprobe), nie z wallclocka legów ─────────

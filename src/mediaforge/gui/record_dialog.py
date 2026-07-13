@@ -47,6 +47,8 @@ from mediaforge.core.engines.ffmpeg_cmd import (
     AudioConfig,
     CaptureMode,
     CaptureSource,
+    encoder_label,
+    resolve_encoder,
 )
 from mediaforge.core.engines.recorder import (
     RecorderEngine,
@@ -384,6 +386,13 @@ class RecordDialog(QDialog):
         self._preset_combo.setToolTip("Preset jakości (kodek, FPS, bitrate)")
         form.addRow("Jakość:", self._preset_combo)
 
+        # Wybrany enkoder (GPU/CPU) — GUI nie ukrywa degradacji: przy torze software amber notka
+        # „ograniczono do 30 fps / 1080p" (jak ostrzeżenie o loopbacku). Aktualizowana per preset.
+        self._encoder_hint = QLabel()
+        self._encoder_hint.setWordWrap(True)
+        self._encoder_hint.setToolTip("Enkoder wideo wybrany dla tego presetu i sprzętu")
+        form.addRow("Enkoder:", self._encoder_hint)
+
         self._sys_audio = QCheckBox("Dźwięk systemowy (WASAPI loopback)")
         self._sys_audio.setChecked(True)
         self._mic_audio = QCheckBox("Mikrofon")
@@ -485,6 +494,7 @@ class RecordDialog(QDialog):
         self._mix_audio.setEnabled(self._sys_audio.isChecked() and self._mic_audio.isChecked())
         # Ostrzeżenie o braku loopbacku tylko, gdy dźwięk systemowy jest włączony.
         self._loopback_warn.setVisible(self._sys_audio.isChecked() and not self._has_loopback)
+        self._update_encoder_hint()
 
         recording = self._session is not None and self._session.state in (
             RecorderState.RECORDING,
@@ -497,6 +507,23 @@ class RecordDialog(QDialog):
         self._stop_btn.setEnabled(recording and not busy)
         for w in (self._mode_combo, self._preset_combo, self._title_edit, self._out_dir):
             w.setEnabled(not recording and not busy)
+
+    def _selected_quality(self) -> Any:
+        """Preset jakości wybrany w combo (wspólne źródło dla startu i podglądu enkodera)."""
+        return PRESETS[self._preset_keys[self._preset_combo.currentIndex()]]
+
+    def _update_encoder_hint(self) -> None:
+        """Odświeża notkę o wybranym enkoderze: sprzęt (zwykły) / software (amber, degradacja)."""
+        choice = resolve_encoder(self._selected_quality(), self._engine.encoders)
+        if choice is None:  # audio-only: brak enkodera wideo
+            self._encoder_hint.setVisible(False)
+            return
+        self._encoder_hint.setText(f"Enkoder: {encoder_label(choice)}")
+        # Software → amber (jak loopback: sygnał degradacji); sprzęt → zwykły kolor motywu.
+        self._encoder_hint.setStyleSheet(
+            "" if choice.hardware else f"color: {current_palette().amber};"
+        )
+        self._encoder_hint.setVisible(True)
 
     # ── Budowanie opcji z UI ────────────────────────────────────────────────────
 
@@ -655,6 +682,10 @@ class RecordDialog(QDialog):
             self._sync_controls()
             return
         self._recording_announced = False
+        # Wybrany enkoder do logu przy starcie — degradacja na software jest widoczna, nie ukryta.
+        enc_choice = resolve_encoder(quality, self._engine.encoders)
+        if enc_choice is not None:
+            self._log.append_line(f"Enkoder: {encoder_label(enc_choice)}", "info")
         if self._preroll_sec > 0:
             self._log.append_line(
                 f"Przygotowuję nagranie… (pre-roll {self._preroll_sec}s)", "paused"

@@ -166,7 +166,18 @@ def check_ffmpeg(
     encoders_usable: dict[str, bool] = {}
     if tool["available"]:
         enc = _run(["ffmpeg", "-hide_banner", "-encoders"])
-        for name in ("h264_nvenc", "hevc_nvenc", "av1_nvenc", "libx264", "libx265"):
+        # NVENC (NVIDIA) + AMF (Radeon/APU AMD, np. 780M → h264_amf) + QSV (Intel iGPU); ta sama
+        # sonda runtime co NVENC (obecność w buildzie ≠ realna inicjalizacja). libx264/libx265 obok.
+        for name in (
+            "h264_nvenc",
+            "hevc_nvenc",
+            "av1_nvenc",
+            "h264_amf",
+            "hevc_amf",
+            "h264_qsv",
+            "libx264",
+            "libx265",
+        ):
             encoders[name] = name in enc
         if probe_encoders:
             probe_fn = probe if probe is not None else probe_encoder

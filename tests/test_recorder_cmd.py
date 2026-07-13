@@ -10,9 +10,12 @@ from mediaforge.core.engines.ffmpeg_cmd import (
     AudioConfig,
     CaptureMode,
     CaptureSource,
+    EncoderChoice,
     build_record_command,
     build_video_filter,
+    encoder_label,
     estimate_size_mb,
+    resolve_encoder,
     select_video_encoder,
 )
 
@@ -35,6 +38,17 @@ _NO_NVENC = {
     "libx264": True,
     "libx265": True,
 }
+# NVENC martwy, ale AMF (Radeon) żyje — tor sprzętowy nie jest wyczerpany, więc NIE schodzimy
+# na software. Radeon 780M: h264_amf usable (hevc_amf martwy) → spodziewany h264_amf, nie libx265.
+_AMF_ONLY = {
+    "h264_nvenc": False,
+    "hevc_nvenc": False,
+    "av1_nvenc": False,
+    "h264_amf": True,
+    "hevc_amf": False,
+    "libx264": True,
+    "libx265": True,
+}
 
 
 def _arg_value(cmd: list[str], flag: str) -> str:
@@ -50,22 +64,57 @@ def test_encoder_prefers_nvenc_when_available() -> None:
     assert choice.hardware is True
 
 
-def test_encoder_falls_back_to_software_without_nvenc() -> None:
+def test_encoder_full_nvenc_h264_chain() -> None:
+    choice = select_video_encoder("h264", _ALL_ENCODERS)
+    assert choice.name == "h264_nvenc"
+    assert choice.hardware is True
+
+
+def test_encoder_dead_nvenc_falls_to_amf_not_libx265() -> None:
+    # NVENC martwy + AMF żywy → h264_amf (sprzęt niewyczerpany). NIGDY libx265 (za wolny na CPU).
+    choice = select_video_encoder("hevc", _AMF_ONLY)
+    assert choice.name == "h264_amf"
+    assert choice.hardware is True
+
+
+def test_encoder_software_only_is_libx264() -> None:
+    # Cały sprzęt martwy → ostateczny software-fallback to WYŁĄCZNIE libx264 (nie libx265).
     choice = select_video_encoder("hevc", _NO_NVENC)
-    assert choice.name == "libx265"
+    assert choice.name == "libx264"
     assert choice.hardware is False
 
 
-def test_encoder_av1_falls_back_to_hevc_software_chain() -> None:
-    # Brak av1 (sprzętowego i programowego) → łańcuch schodzi do dostępnego programowego.
-    choice = select_video_encoder("av1", _NO_NVENC)
-    assert choice.name in {"libx265", "libx264"}
-    assert choice.hardware is False
+def test_encoder_av1_exhausts_hardware_before_software() -> None:
+    # Brak av1 sprzętowego → schodzimy po torze sprzętowym (nvenc/amf/qsv), a nie na software-AV1.
+    choice = select_video_encoder("av1", _AMF_ONLY)
+    assert choice.name == "h264_amf"
+    assert choice.hardware is True
+    # Bez żadnego sprzętu av1 kończy na libx264 (nie libsvtav1/libaom/libx265).
+    assert select_video_encoder("av1", _NO_NVENC).name == "libx264"
+
+
+def test_encoder_libx265_never_selected_for_recording() -> None:
+    # Nawet gdy w buildzie zostaje SAM libx265 (dziwny build), wybór go pomija → libx264 nominalnie.
+    for codec in ("hevc", "h264", "av1"):
+        choice = select_video_encoder(codec, {"libx265": True})
+        assert choice.name != "libx265"
+        assert choice.name == "libx264"
 
 
 def test_encoder_last_resort_is_libx264() -> None:
     choice = select_video_encoder("hevc", {"hevc_nvenc": False, "libx265": False})
     assert choice.name == "libx264"
+
+
+def test_encoder_label_marks_gpu_vs_cpu_degradation() -> None:
+    assert encoder_label(EncoderChoice("hevc_nvenc", True)) == "hevc_nvenc (GPU)"
+    soft = encoder_label(EncoderChoice("libx264", False))
+    assert soft == "libx264 (CPU) — ograniczono do 30 fps / 1080p"
+
+
+def test_resolve_encoder_none_for_audio_only() -> None:
+    assert resolve_encoder(PRESETS["audio_only"], _ALL_ENCODERS) is None
+    assert resolve_encoder(PRESETS["standard"], _ALL_ENCODERS) == EncoderChoice("hevc_nvenc", True)
 
 
 # ── Budowa komendy: tryby źródła ───────────────────────────────────────────────
@@ -154,6 +203,68 @@ def test_record_command_vf_has_no_trim() -> None:
     )
     vf = _arg_value(cmd, "-vf")
     assert "trim" not in vf and "setpts" not in vf
+
+
+def test_filter_software_scale_after_crop() -> None:
+    # Software: scale ≤1920 PO crop, przed yuv420p; przecinek w min() chroniony ''.
+    vf = build_video_filter((10, 20, 3840, 2160), max_width=1920)
+    assert "crop=3840:2160:10:20" in vf
+    assert "scale='min(1920,iw)':-2" in vf
+    assert vf.index("crop=") < vf.index("scale=") < vf.index("format=yuv420p")
+
+
+def test_filter_no_scale_without_max_width() -> None:
+    # Sprzęt (bez max_width): filtr 1:1 jak dziś, bez scale.
+    assert "scale" not in build_video_filter(None)
+    assert "scale" not in build_video_filter((0, 0, 800, 600))
+
+
+# ── Adaptacja software: fps ≤ 30 + scale ≤ 1920 (bez niej fallback = szarpanie) ──
+
+
+def test_software_encoder_caps_fps_and_scales() -> None:
+    # Tor software (tylko libx264): fps wymuszony na 30 (mimo presetu 60) + scale w -vf, veryfast.
+    cmd = build_record_command(
+        source=CaptureSource(mode=CaptureMode.FULLSCREEN),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["high"],  # fps=60, hevc
+        encoders=_NO_NVENC,  # cały sprzęt martwy → libx264
+        segment_pattern="/tmp/seg_%03d.mkv",
+    )
+    assert _arg_value(cmd, "-c:v") == "libx264"
+    assert _has_substr(cmd, "ddagrab=output_idx=0:framerate=30")  # fps ≤ 30
+    assert "scale='min(1920,iw)':-2" in _arg_value(cmd, "-vf")
+    assert _arg_value(cmd, "-preset") == "veryfast"
+    assert "-tune" not in cmd  # -tune hq tylko dla toru sprzętowego
+
+
+def test_software_scale_after_crop_in_command() -> None:
+    # crop najpierw, scale po — także w pełnej komendzie (region + software).
+    cmd = build_record_command(
+        source=CaptureSource(mode=CaptureMode.REGION, monitor=0, region=(0, 0, 3840, 2160)),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["high"],
+        encoders=_NO_NVENC,
+        segment_pattern="/tmp/seg_%03d.mkv",
+    )
+    vf = _arg_value(cmd, "-vf")
+    assert vf.index("crop=") < vf.index("scale=")
+
+
+def test_hardware_encoder_keeps_native_fps_and_no_scale() -> None:
+    # Regresja 5090: sprzęt → 60 fps, bez scale w -vf, preset p5 + tune hq (zachowanie 1:1).
+    cmd = build_record_command(
+        source=CaptureSource(mode=CaptureMode.FULLSCREEN),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["high"],  # fps=60
+        encoders=_ALL_ENCODERS,
+        segment_pattern="/tmp/seg_%03d.mkv",
+    )
+    assert _arg_value(cmd, "-c:v") == "hevc_nvenc"
+    assert _has_substr(cmd, "ddagrab=output_idx=0:framerate=60")  # natywne 60 fps
+    assert "scale" not in _arg_value(cmd, "-vf")  # sprzęt → bez skalowania
+    assert _arg_value(cmd, "-preset") == "p5"
+    assert _arg_value(cmd, "-tune") == "hq"
 
 
 def test_video_pipeline_ddagrab_nvenc_cfr() -> None:
