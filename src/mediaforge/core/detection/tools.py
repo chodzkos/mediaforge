@@ -22,6 +22,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,11 @@ _TIMEOUT = 5
 # Sonda enkodera koduje 1 klatkę — zwykle ~0,5 s, ale zimny NVENC/ładowanie sterownika bywa
 # wolniejsze; 15 s to bezpieczny sufit (i tak wołane w tle / w doctorze, nie na wątku UI).
 _ENCODER_PROBE_TIMEOUT = 15
+# Rozmiar wejścia sondy. NIE zmniejszać: 64x64 dawało FAŁSZYWY NEGATYW NVENC — h264_nvenc
+# wymaga wejścia rzędu ≥145 px szerokości, poniżej którego inicjalizacja pada na ZDROWYM
+# enkoderze (returncode≠0 → mylące „✗"). 640x360 ma bezpieczny margines ponad minima wszystkich
+# rodzin (nvenc/amf/qsv). Zmierzone: 64x64 → rc≠0, 640x360 → rc 0 (RTX 5090, sterownik 610.62).
+_ENCODER_PROBE_SIZE = "640x360"
 
 
 def _run(cmd: list[str], timeout: int = _TIMEOUT) -> str:
@@ -48,8 +54,8 @@ def _run(cmd: list[str], timeout: int = _TIMEOUT) -> str:
         return ""
 
 
-def _run_returncode(cmd: list[str], timeout: int) -> int:
-    """Uruchamia komendę i zwraca kod wyjścia (127 = nie udało się uruchomić / timeout)."""
+def _run_capture(cmd: list[str], timeout: int) -> tuple[int, str]:
+    """Uruchamia komendę → ``(returncode, stderr)``. ``(127, "")`` gdy nie ruszyła / timeout."""
     try:
         proc = subprocess.run(
             cmd,
@@ -58,9 +64,15 @@ def _run_returncode(cmd: list[str], timeout: int) -> int:
             timeout=timeout,
             creationflags=NO_WINDOW_FLAGS,
         )
-        return proc.returncode
+        return proc.returncode, proc.stderr or ""
     except Exception:
-        return 127
+        return 127, ""
+
+
+def _stderr_tail(stderr: str, lines: int = 2) -> str:
+    """Ostatnie ``lines`` niepustych linii stderr (realny powód porażki do doctora)."""
+    tail = [ln.strip() for ln in stderr.strip().splitlines() if ln.strip()]
+    return " | ".join(tail[-lines:])
 
 
 def _encoder_probe_cmd(name: str, ffmpeg: str) -> list[str]:
@@ -71,7 +83,7 @@ def _encoder_probe_cmd(name: str, ffmpeg: str) -> list[str]:
         "-f",
         "lavfi",
         "-i",
-        "testsrc=duration=0.1:size=64x64:rate=30",
+        f"testsrc=duration=0.1:size={_ENCODER_PROBE_SIZE}:rate=30",
         "-frames:v",
         "1",
         "-c:v",
@@ -82,19 +94,36 @@ def _encoder_probe_cmd(name: str, ffmpeg: str) -> list[str]:
     ]
 
 
+@dataclass(frozen=True)
+class ProbeResult:
+    """Wynik sondy enkodera: czy działa + ogon stderr przy porażce (diagnostyka, nie zgadywanie)."""
+
+    available: bool
+    stderr_tail: str = ""  # ostatnie linie stderr, tylko gdy available=False
+
+
 @lru_cache(maxsize=32)
-def probe_encoder(name: str, ffmpeg: str = "ffmpeg") -> bool:
+def probe_encoder_result(name: str, ffmpeg: str = "ffmpeg") -> ProbeResult:
     """Empiryczna sonda: czy enkoder REALNIE inicjalizuje się w runtime (nie tylko jest w buildzie).
 
     Listing ``ffmpeg -encoders`` mówi tylko, że enkoder wkompilowano — inicjalizacja może paść:
     za stary sterownik (FFmpeg 8.x wymaga NVIDIA ≥610) albo brak wsparcia w krzemie (``av1_nvenc``
-    na Pascalu). Kodujemy jedną klatkę ``testsrc`` do ``null`` i patrzymy na kod wyjścia — ta sama
+    na Pascalu). Kodujemy 1 klatkę ``testsrc`` do ``null`` i patrzymy na kod wyjścia — ta sama
     filozofia co :func:`core.ai.transcribe.detect_whisper_runtime`: EMPIRYKA zamiast progów.
+    Werdykt WYŁĄCZNIE po ``returncode`` — warning na stderr przy rc=0 to nadal sukces.
 
     Wynik cache'owany (``lru_cache``): sonda ~0,5 s/enkoder, a odpowiedź jest stała w obrębie
     procesu (sprzęt/sterownik się nie zmienia). Testy czyszczą cache przez ``cache_clear()``.
     """
-    return _run_returncode(_encoder_probe_cmd(name, ffmpeg), _ENCODER_PROBE_TIMEOUT) == 0
+    rc, stderr = _run_capture(_encoder_probe_cmd(name, ffmpeg), _ENCODER_PROBE_TIMEOUT)
+    if rc == 0:
+        return ProbeResult(True)
+    return ProbeResult(False, _stderr_tail(stderr))
+
+
+def probe_encoder(name: str, ffmpeg: str = "ffmpeg") -> bool:
+    """Bool-owe podsumowanie sondy (zgodność wsteczna). Szczegóły: :func:`probe_encoder_result`."""
+    return probe_encoder_result(name, ffmpeg).available
 
 
 # ───────────── Prymitywy generyczne (→ chodzkos-detection) ─────────────
@@ -164,6 +193,7 @@ def check_ffmpeg(
     tool = probe_tool("ffmpeg", ["-hide_banner", "-version"], _ffmpeg_version)
     encoders: dict[str, bool] = {}
     encoders_usable: dict[str, bool] = {}
+    encoder_probe_errors: dict[str, str] = {}  # nazwa → ogon stderr, tylko dla martwych w runtime
     if tool["available"]:
         enc = _run(["ffmpeg", "-hide_banner", "-encoders"])
         # NVENC (NVIDIA) + AMF (Radeon/APU AMD, np. 780M → h264_amf) + QSV (Intel iGPU); ta sama
@@ -180,10 +210,22 @@ def check_ffmpeg(
         ):
             encoders[name] = name in enc
         if probe_encoders:
-            probe_fn = probe if probe is not None else probe_encoder
-            # Sonda TYLKO dla enkoderów obecnych w buildzie (nieobecnego nie ma po co próbować).
-            encoders_usable = {n: probe_fn(n) for n, present in encoders.items() if present}
-    return {**tool, "encoders": encoders, "encoders_usable": encoders_usable}
+            # Wstrzyknięty bool-``probe`` (seam testów) → ProbeResult bez stderr; realna sonda →
+            # z ogonem stderr. Sonda TYLKO dla enkoderów obecnych w buildzie.
+            def _result(name: str) -> ProbeResult:
+                return ProbeResult(probe(name)) if probe is not None else probe_encoder_result(name)
+
+            results = {n: _result(n) for n, present in encoders.items() if present}
+            encoders_usable = {n: r.available for n, r in results.items()}
+            encoder_probe_errors = {
+                n: r.stderr_tail for n, r in results.items() if not r.available and r.stderr_tail
+            }
+    return {
+        **tool,
+        "encoders": encoders,
+        "encoders_usable": encoders_usable,
+        "encoder_probe_errors": encoder_probe_errors,
+    }
 
 
 def check_whispercpp(

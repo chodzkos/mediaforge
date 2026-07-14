@@ -10,6 +10,7 @@ detekcji pozostaje odsprzężona od configu.
 from __future__ import annotations
 
 import platform
+import re
 from typing import Any
 
 from mediaforge.core.ai.transcribe import cached_whisper_runtime
@@ -118,6 +119,21 @@ def _compute_cap_below(gpu: dict[str, Any], threshold: float) -> bool:
         return str(gpu.get("arch", "")) in ("pascal", "older")
 
 
+def _driver_below(gpu: dict[str, Any], threshold: float) -> bool:
+    """Czy wersja sterownika NVIDIA < próg. Nierozpoznana wersja → False (nie strasz bez danych).
+
+    Hint „FFmpeg 8.x wymaga ≥610" wolno pokazać TYLKO, gdy sterownik faktycznie jest za stary —
+    inaczej przy 610.62 kłamał i wysyłał diagnozę w maliny.
+    """
+    m = re.match(r"(\d+(?:\.\d+)?)", str(gpu.get("driver", "")))
+    if not m:
+        return False
+    try:
+        return float(m.group(1)) < threshold
+    except ValueError:
+        return False
+
+
 def status_line(report: dict[str, Any]) -> str:
     """Zwięzły jednowierszowy status do paska GUI — z tych samych DANYCH co `doctor`.
 
@@ -159,19 +175,24 @@ def render_report(report: dict[str, Any]) -> str:
     lines.append(f"FFmpeg:      {ff_av} {ff.get('version', '')}".rstrip())
     lines.append(f"             enkodery: {enc_str}")
     gpu_info = report.get("gpu", {})
-    # Pascal (cc < 7.5): sterownik ≥610 wymagany przez FFmpeg 8.x/git dla NVENC nie istnieje —
-    # jedyne wyjście to release 7.x, nie 8.x/git. Dopisek TYLKO dla martwego NVENC na takim GPU.
-    pascal_nvenc = gpu_info.get("available") and _compute_cap_below(gpu_info, 7.5)
+    probe_errors = ff.get("encoder_probe_errors", {})
+    # Hint sterownikowy TYLKO gdy wersja faktycznie < 610 (przy 610.62 poprzednio kłamał).
+    driver_below_610 = bool(gpu_info.get("available")) and _driver_below(gpu_info, 610.0)
+    # Pascal (cc < 7.5): sterownik ≥610 dla FFmpeg 8.x/git NVENC nie istnieje — jedyne wyjście to
+    # release 7.x. Dopisek tylko przy realnie starym sterowniku NA takim GPU.
+    pascal_nvenc = bool(gpu_info.get("available")) and _compute_cap_below(gpu_info, 7.5)
     for name in broken:
-        hint = (
-            f"             → {name}: jest w buildzie, nie działa w runtime — sprawdź "
-            f"sterownik NVIDIA (FFmpeg 8.x wymaga ≥610)"
-        )
-        if name.endswith("nvenc") and pascal_nvenc:
-            hint += (
-                " (Pascal: sterownik ≥610 nie istnieje — zainstaluj FFmpeg 7.x RELEASE "
-                "zamiast 8.x/git)"
-            )
+        hint = f"             → {name}: jest w buildzie, nie działa w runtime"
+        tail = probe_errors.get(name)
+        if tail:
+            hint += f" — {tail}"  # realny powód ze stderr sondy, zamiast zgadywania
+        if name.endswith("nvenc") and driver_below_610:
+            hint += " (FFmpeg 8.x wymaga sterownika NVIDIA ≥610)"
+            if pascal_nvenc:
+                hint += (
+                    " (Pascal: sterownik ≥610 nie istnieje — zainstaluj FFmpeg 7.x RELEASE "
+                    "zamiast 8.x/git)"
+                )
         lines.append(hint)
     if not ff.get("available", False):
         lines.append(f"             → {_HINTS['ffmpeg']}")
