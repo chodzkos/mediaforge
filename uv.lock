@@ -413,8 +413,8 @@ wheels = [
 
 [[package]]
 name = "chodzkos-gui-kit"
-version = "0.5.1"
-source = { git = "https://github.com/chodzkos/gui-kit?rev=44e639881a7e86600efabe74ec0c8dc8c0114fd2#44e639881a7e86600efabe74ec0c8dc8c0114fd2" }
+version = "0.5.2"
+source = { git = "https://github.com/chodzkos/gui-kit?rev=12c6b30cfa8f4c00f21b31c583cd70e70b0d1379#12c6b30cfa8f4c00f21b31c583cd70e70b0d1379" }
 dependencies = [
     { name = "platformdirs" },
 ]
@@ -1585,7 +1585,7 @@ transcribe-hf = [
 
 [package.metadata]
 requires-dist = [
-    { name = "chodzkos-gui-kit", extras = ["qt"], git = "https://github.com/chodzkos/gui-kit?rev=44e639881a7e86600efabe74ec0c8dc8c0114fd2" },
+    { name = "chodzkos-gui-kit", extras = ["qt"], git = "https://github.com/chodzkos/gui-kit?rev=12c6b30cfa8f4c00f21b31c583cd70e70b0d1379" },
     { name = "faster-whisper", marker = "extra == 'transcribe-ct2'", specifier = ">=1.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "insanely-fast-whisper", marker = "extra == 'transcribe-hf'" },

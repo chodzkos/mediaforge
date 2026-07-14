@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from chodzkos_gui_kit.qt.widgets import LogView
+from chodzkos_gui_kit.qt.widgets import LogView, make_scrollable
 from PySide6.QtCore import QPoint, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -241,7 +241,8 @@ class LibraryWidget(QWidget):
         self._details.attach_slides_btn.clicked.connect(self._on_attach_slides)
         self._details.open_btn.clicked.connect(self._open_folder)
         self._details.delete_btn.clicked.connect(self._on_delete)
-        return self._details
+        # Panel to czysta treść — scroll przy niskim oknie daje kitowy make_scrollable.
+        return make_scrollable(self._details)
 
     # ── Dane ──────────────────────────────────────────────────────────────────
 

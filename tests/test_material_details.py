@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from chodzkos_gui_kit.qt.widgets import make_scrollable
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 
@@ -44,18 +45,20 @@ def test_panel_scrolls_instead_of_overlapping(
 ) -> None:
     folder, meta = _material_with_everything(tmp_path)
     panel = MaterialDetailsPanel()
-    qtbot.addWidget(panel)
     panel.load(folder, meta)
-    panel.setFixedSize(240, 240)  # WĄSKIE i NISKIE — najgorszy przypadek
-    panel.show()
+    # Panel to czysta treść; scroll daje owijający kitowy make_scrollable (jak w GUI).
+    scroll = make_scrollable(panel)
+    qtbot.addWidget(scroll)
+    scroll.setFixedSize(240, 240)  # WĄSKIE i NISKIE — najgorszy przypadek
+    scroll.show()
     qapp.processEvents()
     qapp.processEvents()
 
-    content = panel.widget()
-    assert content is not None
+    content = scroll.widget()
+    assert content is panel
     # Treść wyższa niż viewport → aktywny pionowy scroll (nie clip/overlap).
-    assert content.minimumSizeHint().height() > panel.viewport().height()
-    assert panel.verticalScrollBar().maximum() > 0
+    assert content.minimumSizeHint().height() > scroll.viewport().height()
+    assert scroll.verticalScrollBar().maximum() > 0
 
     # Sekcje w pionie NIE nachodzą: bottom(i) <= top(i+1) w kolejności ułożenia.
     rows = [panel._thumb, panel.title, panel._info, panel.save_btn, panel._summary_view]

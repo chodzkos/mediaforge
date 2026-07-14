@@ -16,7 +16,8 @@ rodzaje sekcji:
 
 Żaden element o zmiennej treści nie ma stałej/maksymalnej wysokości
 (``setFixedHeight``/``setMaximumHeight``) — długi tekst rośnie, zamiast nachodzić na sąsiada.
-Całość opakowana w ``QScrollArea`` (``widgetResizable``): gdy suma minimalnych wysokości
+Panel to czysta powierzchnia treści; właściciel owija go w kitowy
+``make_scrollable`` (``widgetResizable``), więc gdy suma minimalnych wysokości
 przerośnie okno, pojawia się scroll. Dzięki temu dodanie KOLEJNEGO elementu do panelu
 (S5/S6) nie może już wywołać nakładania — nie będzie wymagać kolejnego fixu layoutu.
 """
@@ -38,7 +39,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QTextBrowser,
     QVBoxLayout,
@@ -65,23 +65,21 @@ def _fmt_timestamp(seconds: int) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-class MaterialDetailsPanel(QScrollArea):
+class MaterialDetailsPanel(QWidget):
     """Miniatura + metadane + akcje + podgląd streszczenia dla jednego materiału.
 
     Przyciski (``save_btn``/``transcribe_btn``/``summarize_btn``/``open_btn``/``delete_btn``)
     i pola edycji (``title``/``presenter``/``organizer``/``category``/``tags``/``cloud_ok``)
     są publiczne — właściciel wiąże je i czyta. Panel sam NIE wykonuje żadnej akcji na danych.
+
+    To czysta powierzchnia treści — scroll przy niskim oknie zapewnia właściciel,
+    owijając panel w :func:`chodzkos_gui_kit.qt.widgets.make_scrollable` (patrz
+    ``LibraryWidget._build_details``). Panel sam się nie przewija.
     """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        # widgetResizable: zawartość dopasowuje się do viewportu; scroll gdy za mało miejsca.
-        self.setWidgetResizable(True)
-        self.setFrameShape(QScrollArea.Shape.NoFrame)
-
-        content = QWidget()
-        self.setWidget(content)
-        col = QVBoxLayout(content)
+        col = QVBoxLayout(self)
 
         # ── STAŁE: miniatura (minimum, nie stała — może pokazać obraz lub tekst) ──
         self._thumb = QLabel("(brak podglądu)")
@@ -149,8 +147,9 @@ class MaterialDetailsPanel(QScrollArea):
         col.addWidget(self._summary_view, stretch=1)
 
         # ── ROZCIĄGLIWA: galeria slajdów (IconMode, własny scroll wewnętrzny) ────
-        # Kolejna sekcja rozciągliwa PO fixie layoutu z fix/s4-polish — panel jest w QScrollArea,
-        # więc długie Info + streszczenie + galeria naraz przy wąskim oknie nie nachodzą (scroll).
+        # Kolejna sekcja rozciągliwa PO fixie layoutu z fix/s4-polish — panel owija
+        # make_scrollable, więc długie Info + streszczenie + galeria naraz przy wąskim
+        # oknie nie nachodzą (scroll).
         col.addWidget(QLabel("Slajdy:"))
         self._slides_gallery = QListWidget()
         self._slides_gallery.setViewMode(QListWidget.ViewMode.IconMode)

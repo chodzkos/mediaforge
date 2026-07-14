@@ -6,6 +6,15 @@ projekt stosuje [Semantic Versioning](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+### Changed
+- **Przewijalny panel szczegółów przez `make_scrollable` z `chodzkos-gui-kit` 0.5.2.**
+  `MaterialDetailsPanel` przestaje dziedziczyć po `QScrollArea` — jest teraz czystą
+  powierzchnią treści (`QWidget`), a scroll przy niskim oknie zapewnia kitowy helper
+  `make_scrollable` (owija panel w `LibraryWidget._build_details`). Wzorzec wyniesiony
+  do kitu (reguła trzech: EpubForge + IcoForge miały ten sam wzorzec). Zachowanie
+  bez zmian (test `test_material_details` zaktualizowany pod kompozycję); bonus —
+  tło z palety motywu. Pin `chodzkos-gui-kit` podbity do v0.5.2 (SHA `12c6b30`).
+
 ### Fixed
 - **Przebieg audytu niezawodności/bezpieczeństwa (M1–M14, M16–M19, M21–M22; PR #37–#53 i dalej).** Statyczny audyt kodu (stan po S5) + sesja testów na Windows/GTX 1070 wykryły serię błędów utraty danych i „cichych sukcesów"; poprawki poniżej, każda z testem regresji. (Otwarte: M15 — pomiar transientu ddagrab na 5090.)
   - **Transkrypcja przestała „udawać sukces" (M1).** Ignorowane kody wyjścia ffmpeg/whisper-cli dawały `transcript_status=done` bez pliku; teraz `TranscriptionError` (sprawdzany returncode + istnienie plików) → job failed z retry, status materiału nietknięty.
