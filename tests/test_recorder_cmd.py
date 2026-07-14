@@ -1,6 +1,10 @@
-"""Testy budowania komend FFmpeg dla nagrywania (czysta logika, bez subprocess)."""
+"""Testy budowania komend FFmpeg dla nagrywania (czysta logika + smoke z realnym ffmpeg)."""
 
 from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +18,7 @@ from mediaforge.core.engines.ffmpeg_cmd import (
     build_record_command,
     build_video_filter,
     encoder_label,
+    encoder_quality_args,
     estimate_size_mb,
     resolve_encoder,
     select_video_encoder,
@@ -115,6 +120,93 @@ def test_encoder_label_marks_gpu_vs_cpu_degradation() -> None:
 def test_resolve_encoder_none_for_audio_only() -> None:
     assert resolve_encoder(PRESETS["audio_only"], _ALL_ENCODERS) is None
     assert resolve_encoder(PRESETS["standard"], _ALL_ENCODERS) == EncoderChoice("hevc_nvenc", True)
+
+
+# ── Flagi jakości PER RODZINA enkodera (bug: p5/-tune NVENC doklejane wszystkim) ─
+
+
+def test_encoder_quality_args_per_family() -> None:
+    # NVENC: presety p1-p7 istnieją tylko tu.
+    assert encoder_quality_args("h264_nvenc") == ["-preset", "p5", "-tune", "hq"]
+    assert encoder_quality_args("hevc_nvenc") == ["-preset", "p5", "-tune", "hq"]
+    # QSV: nazwy jak x264, BEZ p5 i BEZ -tune.
+    qsv = encoder_quality_args("h264_qsv")
+    assert qsv == ["-preset", "veryfast"] and "p5" not in qsv and "-tune" not in qsv
+    # AMF: BEZ -preset (ma -quality/-usage).
+    amf = encoder_quality_args("h264_amf")
+    assert amf == ["-quality", "balanced"] and "-preset" not in amf
+    # libx264: veryfast + crf.
+    assert encoder_quality_args("libx264") == ["-preset", "veryfast", "-crf", "23"]
+    # Nieznana rodzina → brak flag jakości (domyślne enkodera).
+    assert encoder_quality_args("libx265") == []
+
+
+def _build_with_encoders(encoders: dict[str, bool]) -> list[str]:
+    return build_record_command(
+        source=CaptureSource(),
+        audio=AudioConfig(system_audio=False),
+        quality=PRESETS["standard"],
+        encoders=encoders,
+        segment_pattern="/tmp/seg_%03d.mkv",
+    )
+
+
+def test_record_command_qsv_has_no_nvenc_preset() -> None:
+    """Regresja: fallback na h264_qsv NIE dostaje p5/-tune (inaczej ffmpeg nie startuje)."""
+    cmd = _build_with_encoders({"h264_qsv": True})
+    assert _arg_value(cmd, "-c:v") == "h264_qsv"
+    assert "p5" not in cmd and "-tune" not in cmd
+
+
+def test_record_command_amf_has_no_preset() -> None:
+    cmd = _build_with_encoders({"h264_amf": True})
+    assert _arg_value(cmd, "-c:v") == "h264_amf"
+    assert "-preset" not in cmd
+    assert _arg_value(cmd, "-quality") == "balanced"
+
+
+def test_record_command_nvenc_keeps_p5_hq() -> None:
+    """Regresja 5090: NVENC nadal dostaje p5 + hq."""
+    cmd = _build_with_encoders({"hevc_nvenc": True})
+    assert _arg_value(cmd, "-c:v") == "hevc_nvenc"
+    assert _arg_value(cmd, "-preset") == "p5"
+    assert _arg_value(cmd, "-tune") == "hq"
+
+
+def test_record_command_libx264_has_veryfast_crf() -> None:
+    cmd = _build_with_encoders(_NO_NVENC)
+    assert _arg_value(cmd, "-c:v") == "libx264"
+    assert _arg_value(cmd, "-preset") == "veryfast"
+    assert _arg_value(cmd, "-crf") == "23"
+
+
+def test_encoder_quality_smoke_libx264(tmp_path: Path) -> None:
+    """Smoke: flagi jakości libx264 REALNIE parsują się w ffmpeg (1 klatka testsrc → null).
+
+    Pomijane, gdy brak ffmpeg (CI Windows/kontener zwykle bez binarki) — łapie regresję flag
+    tam, gdzie ffmpeg jest. NVENC/QSV/AMF wymagają sprzętu → poza zakresem sondy na CI.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("brak ffmpeg w PATH")
+    cmd = [
+        ffmpeg,
+        "-hide_banner",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=duration=0.1:size=64x64:rate=30",
+        "-frames:v",
+        "1",
+        "-c:v",
+        "libx264",
+        *encoder_quality_args("libx264"),
+        "-f",
+        "null",
+        "-",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+    assert proc.returncode == 0, proc.stderr[-500:]
 
 
 # ── Budowa komendy: tryby źródła ───────────────────────────────────────────────
