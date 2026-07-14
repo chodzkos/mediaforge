@@ -6,6 +6,15 @@ projekt stosuje [Semantic Versioning](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+### Changed
+- **Przewijalny panel szczegółów przez `make_scrollable` z `chodzkos-gui-kit` 0.5.2.**
+  `MaterialDetailsPanel` przestaje dziedziczyć po `QScrollArea` — jest teraz czystą
+  powierzchnią treści (`QWidget`), a scroll przy niskim oknie zapewnia kitowy helper
+  `make_scrollable` (owija panel w `LibraryWidget._build_details`). Wzorzec wyniesiony
+  do kitu (reguła trzech: EpubForge + IcoForge miały ten sam wzorzec). Zachowanie
+  bez zmian (test `test_material_details` zaktualizowany pod kompozycję); bonus —
+  tło z palety motywu. Pin `chodzkos-gui-kit` podbity do v0.5.2 (SHA `12c6b30`).
+
 ### Fixed
 - **Software-fallback enkodera przestał szarpać na maszynach bez działającego NVENC.** Zmierzone (GTX 1070 + FFmpeg 8.x/git, sterownik < 610): `hevc_nvenc` martwy → dawny łańcuch schodził na `libx265` @ 60 fps @ natywnej rozdzielczości → CPU nie wyrabiał → ciągłe dropy. Trzy zmiany u źródła (każda z testem regresji):
   - **Łańcuchy wyczerpują tor SPRZĘTOWY (NVENC → AMF → QSV) przed zejściem na software** — do capture na żywo liczy się „zdąży zakodować", nie „preferowany kodek". `libx265` (i software-AV1) **całkowicie usunięte z realtime** (software-HEVC nie nadaje się do 60 fps); ostateczny software-fallback to **wyłącznie `libx264 -preset veryfast`**. Nawet w dziwnym buildzie z samym `libx265` wybór go pomija (nigdy do nagrywania). Detekcja (`check_ffmpeg`) rozszerzona o `h264_amf`/`hevc_amf`/`h264_qsv` — ta sama sonda runtime co NVENC (droga dla Radeona 780M: `h264_amf` ✓).
