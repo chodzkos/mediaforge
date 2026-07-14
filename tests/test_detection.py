@@ -152,24 +152,66 @@ def test_status_line_no_cuda() -> None:
 # ── M21: sonda używalności enkoderów w runtime (nie tylko obecność w buildzie) ─────
 
 
-def test_probe_encoder_reads_runtime_returncode(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Sonda rozstrzyga po kodzie wyjścia realnego kodowania testsrc, nie po liście buildu."""
-    calls: list[list[str]] = []
+def test_encoder_probe_cmd_uses_safe_size() -> None:
+    """Strażnik minimum wymiarów: 64x64 to fałszywy negatyw NVENC — sonda używa 640x360."""
+    cmd = tools._encoder_probe_cmd("h264_nvenc", "ffmpeg")
+    src = cmd[cmd.index("-i") + 1]
+    assert "size=640x360" in src
+    assert cmd[cmd.index("-c:v") + 1] == "h264_nvenc"
 
-    def _rc(cmd: list[str], timeout: int) -> int:
-        calls.append(cmd)
-        return 0
 
-    monkeypatch.setattr(tools, "_run_returncode", _rc)
-    tools.probe_encoder.cache_clear()
+def test_probe_encoder_result_ok_ignores_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """rc=0 → available=True nawet ze stderr (warning ≠ awaria); brak stderr_tail przy sukcesie."""
+    monkeypatch.setattr(
+        tools, "_run_capture", lambda cmd, timeout: (0, "[libx264] using SAR 1:1\n")
+    )
+    tools.probe_encoder_result.cache_clear()
+    res = tools.probe_encoder_result("libx264")
+    assert res.available is True and res.stderr_tail == ""
+    tools.probe_encoder_result.cache_clear()
+
+
+def test_probe_encoder_result_failure_captures_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """rc≠0 → available=False + ogon stderr (realny powód do doctora zamiast zgadywania)."""
+    stderr = "some earlier line\n[h264_nvenc] Unable to parse preset option value p5\n"
+    monkeypatch.setattr(tools, "_run_capture", lambda cmd, timeout: (1, stderr))
+    tools.probe_encoder_result.cache_clear()
+    res = tools.probe_encoder_result("h264_nvenc")
+    assert res.available is False
+    assert "Unable to parse preset" in res.stderr_tail
+    tools.probe_encoder_result.cache_clear()
+
+
+def test_probe_encoder_result_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drugi odczyt NIE odpala procesu (lru_cache) — licznik atrapy."""
+    calls = {"n": 0}
+
+    def _fake(cmd: list[str], timeout: int) -> tuple[int, str]:
+        calls["n"] += 1
+        return 0, ""
+
+    monkeypatch.setattr(tools, "_run_capture", _fake)
+    tools.probe_encoder_result.cache_clear()
+    tools.probe_encoder_result("libx264")
+    tools.probe_encoder_result("libx264")
+    assert calls["n"] == 1
+    tools.probe_encoder_result.cache_clear()
+
+
+def test_probe_encoder_bool_wrapper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """probe_encoder (bool) = podsumowanie probe_encoder_result; komenda niesie żądany enkoder."""
+    captured: list[list[str]] = []
+
+    def _fake(cmd: list[str], timeout: int) -> tuple[int, str]:
+        captured.append(cmd)
+        return (0, "") if cmd[cmd.index("-c:v") + 1] == "libx264" else (-40, "boom")
+
+    monkeypatch.setattr(tools, "_run_capture", _fake)
+    tools.probe_encoder_result.cache_clear()
     assert tools.probe_encoder("libx264") is True
-    # Komenda to jednoklatkowe kodowanie testsrc z żądanym enkoderem do null.
-    assert calls and calls[0][calls[0].index("-c:v") + 1] == "libx264"
-
-    monkeypatch.setattr(tools, "_run_returncode", lambda cmd, timeout: -40)
-    tools.probe_encoder.cache_clear()
     assert tools.probe_encoder("hevc_nvenc") is False
-    tools.probe_encoder.cache_clear()  # nie zostawiaj zaślepki w cache dla innych testów
+    assert captured[0][captured[0].index("-c:v") + 1] == "libx264"
+    tools.probe_encoder_result.cache_clear()
 
 
 def test_check_ffmpeg_usable_probes_only_build_present(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -217,6 +259,33 @@ def test_check_ffmpeg_probes_amf_and_qsv(monkeypatch: pytest.MonkeyPatch) -> Non
     assert result["encoders"]["h264_qsv"] is False  # QSV nieobecny w tym buildzie
     assert set(probed) == {"h264_amf", "libx264"}  # sonda TYLKO dla obecnych w buildzie
     assert result["encoders_usable"]["h264_amf"] is True
+    # Wstrzyknięty bool-probe nie niesie stderr → brak wpisów w encoder_probe_errors.
+    assert result["encoder_probe_errors"] == {}
+
+
+def test_check_ffmpeg_collects_probe_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Realna ścieżka sondy: martwy enkoder trafia do encoder_probe_errors z ogonem stderr."""
+    monkeypatch.setattr(
+        tools,
+        "probe_tool",
+        lambda *a, **k: {"available": True, "version": "8.1", "path": Path("ffmpeg")},
+    )
+    monkeypatch.setattr(tools, "_run", lambda *a, **k: "V..... hevc_nvenc x\nV..... libx264 y\n")
+
+    def _cap(cmd: list[str], timeout: int) -> tuple[int, str]:
+        return (
+            (0, "") if cmd[cmd.index("-c:v") + 1] == "libx264" else (1, "init failed: bad thing\n")
+        )
+
+    monkeypatch.setattr(tools, "_run_capture", _cap)
+    tools.probe_encoder_result.cache_clear()
+
+    result = tools.check_ffmpeg(probe_encoders=True)  # realna sonda (probe=None)
+
+    assert result["encoders_usable"] == {"hevc_nvenc": False, "libx264": True}
+    assert "init failed: bad thing" in result["encoder_probe_errors"]["hevc_nvenc"]
+    assert "libx264" not in result["encoder_probe_errors"]  # OK → brak wpisu
+    tools.probe_encoder_result.cache_clear()
 
 
 def test_check_ffmpeg_without_probe_leaves_usable_empty(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -253,7 +322,7 @@ def test_render_report_marks_build_but_unusable_encoder() -> None:
 
 
 def test_render_report_pascal_nvenc_hint() -> None:
-    """NVENC martwy + GPU Pascal (cc < 7.5) → dopisek o FFmpeg 7.x release zamiast 8.x/git."""
+    """NVENC martwy + GPU Pascal (cc < 7.5, sterownik < 610) → dopisek o FFmpeg 7.x release."""
     rep = {
         "ffmpeg": {
             "available": True,
@@ -261,7 +330,14 @@ def test_render_report_pascal_nvenc_hint() -> None:
             "encoders": {"hevc_nvenc": True},
             "encoders_usable": {"hevc_nvenc": False},
         },
-        "gpu": {"available": True, "name": "GTX 1070", "compute_cap": "6.1", "arch": "pascal"},
+        # Pascal jest EOL — max sterownik ~580, więc < 610 (jak GTX 1070 z audytu: 582.66).
+        "gpu": {
+            "available": True,
+            "name": "GTX 1070",
+            "compute_cap": "6.1",
+            "arch": "pascal",
+            "driver": "582.66",
+        },
     }
     text = report.render_report(rep)
     assert "hevc_nvenc ✗" in text
@@ -277,21 +353,50 @@ def test_render_report_pascal_hint_from_arch_without_compute_cap() -> None:
             "encoders": {"hevc_nvenc": True},
             "encoders_usable": {"hevc_nvenc": False},
         },
-        "gpu": {"available": True, "name": "GTX 1070", "compute_cap": "", "arch": "pascal"},
+        "gpu": {
+            "available": True,
+            "name": "GTX 1070",
+            "compute_cap": "",
+            "arch": "pascal",
+            "driver": "580.0",
+        },
     }
     assert "Pascal: sterownik ≥610 nie istnieje" in report.render_report(rep)
 
 
-def test_render_report_no_pascal_hint_on_modern_gpu() -> None:
-    """Nowoczesny GPU (cc ≥ 7.5) z martwym NVENC → hint sterownika BEZ dopisku Pascala."""
+def test_render_report_driver_hint_only_below_610() -> None:
+    """Hint „≥610" TYLKO gdy sterownik faktycznie za stary. 610.62 → brak; 555 → obecny."""
+    base_ff = {
+        "available": True,
+        "encoders": {"hevc_nvenc": True},
+        "encoders_usable": {"hevc_nvenc": False},
+    }
+    # 610.62 (RTX 5090) — sterownik OK: hint sterownikowy NIE może się pojawić (dawniej kłamał).
+    ok = report.render_report(
+        {"ffmpeg": base_ff, "gpu": {"available": True, "name": "RTX 5090", "driver": "610.62"}}
+    )
+    assert "nie działa w runtime" in ok
+    assert "≥610" not in ok and "Pascal" not in ok
+    # 555 na nowoczesnym GPU (cc ≥ 7.5) — za stary sterownik: hint obecny, ale bez dopisku Pascala.
+    old = report.render_report(
+        {
+            "ffmpeg": base_ff,
+            "gpu": {"available": True, "name": "RTX 3060", "compute_cap": "8.6", "driver": "555"},
+        }
+    )
+    assert "wymaga sterownika NVIDIA ≥610" in old
+    assert "Pascal" not in old
+
+
+def test_render_report_shows_probe_stderr() -> None:
+    """Doctor przy „✗" pokazuje ogon stderr sondy (realny powód, nie zgadywanie)."""
     rep = {
         "ffmpeg": {
             "available": True,
             "encoders": {"hevc_nvenc": True},
             "encoders_usable": {"hevc_nvenc": False},
+            "encoder_probe_errors": {"hevc_nvenc": "Cannot load nvcuda.dll"},
         },
-        "gpu": {"available": True, "name": "RTX 5090", "compute_cap": "12.0", "arch": "blackwell"},
+        "gpu": {"available": True, "name": "RTX 5090", "driver": "610.62"},
     }
-    text = report.render_report(rep)
-    assert "nie działa w runtime" in text
-    assert "Pascal" not in text
+    assert "Cannot load nvcuda.dll" in report.render_report(rep)
