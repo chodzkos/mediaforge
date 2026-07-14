@@ -184,6 +184,31 @@ def _is_hardware(name: str) -> bool:
     return name.endswith(("nvenc", "amf", "qsv"))
 
 
+def encoder_quality_args(name: str) -> list[str]:
+    """Flagi jakości/szybkości SPECYFICZNE dla rodziny enkodera (dobór po sufiksie nazwy).
+
+    Presety ``p1``-``p7`` istnieją TYLKO w NVENC. Wpisanie ich obok innego enkodera wywala
+    ffmpeg jeszcze przed startem (zmierzone: fallback na ``h264_qsv`` → „Unable to parse preset
+    option value p5" → proces nie rusza). Każda rodzina ma własny słownik flag:
+
+    * ``*_nvenc`` → ``-preset p5 -tune hq`` (sprzęt realtime-zdolny, jakość),
+    * ``*_qsv``  → ``-preset veryfast`` (QSV używa nazw jak x264; NIE zna ``-tune``),
+    * ``*_amf``  → ``-quality balanced`` (AMF nie ma ``-preset``; ma ``-quality``/``-usage``),
+    * ``libx264`` → ``-preset veryfast -crf 23`` (software realtime).
+
+    Nieznana rodzina → brak flag jakości (domyślne enkodera; nie ryzykujemy złej flagi).
+    """
+    if name.endswith("nvenc"):
+        return ["-preset", "p5", "-tune", "hq"]
+    if name.endswith("qsv"):
+        return ["-preset", "veryfast"]
+    if name.endswith("amf"):
+        return ["-quality", "balanced"]
+    if name == "libx264":
+        return ["-preset", "veryfast", "-crf", "23"]
+    return []
+
+
 def record_framerate(preset_fps: int | None, *, software: bool) -> int:
     """FPS nagrania z presetu, z adaptacją pod tor software.
 
@@ -371,10 +396,9 @@ def build_record_command(
             build_video_filter(source.region, max_width=SOFTWARE_MAX_WIDTH if software else None),
         ]
         cmd += ["-c:v", choice.name]
-        if choice.hardware:
-            cmd += ["-preset", "p5", "-tune", "hq"]  # sprzęt realtime-zdolny, jakość
-        else:
-            cmd += ["-preset", "veryfast"]  # software realtime: najszybszy sensowny preset libx264
+        # Flagi jakości PER RODZINA enkodera (nvenc/qsv/amf/libx264) — presety p1-p7 są tylko
+        # w NVENC, więc doklejanie ich na sztywno wywalało fallback na QSV/AMF (patrz funkcja).
+        cmd += encoder_quality_args(choice.name)
         if quality.bitrate_kbps:
             cmd += ["-b:v", f"{quality.bitrate_kbps}k"]
         cmd += ["-fps_mode", "cfr"]  # stały framerate → koniec skokowości w pliku
