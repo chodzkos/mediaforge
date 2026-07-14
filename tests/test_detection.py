@@ -152,12 +152,34 @@ def test_status_line_no_cuda() -> None:
 # ── M21: sonda używalności enkoderów w runtime (nie tylko obecność w buildzie) ─────
 
 
-def test_encoder_probe_cmd_uses_safe_size() -> None:
-    """Strażnik minimum wymiarów: 64x64 to fałszywy negatyw NVENC — sonda używa 640x360."""
+def test_encoder_probe_cmd_matches_recording_pipeline() -> None:
+    """Strażnik kontraktu sonda↔pipeline: 640x360 (min NVENC) + format=yuv420p (jak realny -vf)."""
     cmd = tools._encoder_probe_cmd("h264_nvenc", "ffmpeg")
     src = cmd[cmd.index("-i") + 1]
-    assert "size=640x360" in src
+    assert "size=640x360" in src  # fix #1: 64x64 to fałszywy negatyw NVENC
+    # fix #2: testsrc jest RGB → bez format=yuv420p konwersja do YUV444 wywalała av1_nvenc.
+    assert cmd[cmd.index("-vf") + 1] == "format=yuv420p"
     assert cmd[cmd.index("-c:v") + 1] == "h264_nvenc"
+
+
+def test_stderr_tail_surfaces_real_cause_over_generic() -> None:
+    """Ogon pomija „Conversion failed!" i pokazuje właściwą przyczynę wyżej („YUV444P…")."""
+    stderr = (
+        "[av1_nvenc @ 0x1] Provided YUV444P not supported\n"
+        "[av1_nvenc @ 0x1] No capable devices found\n"
+        "Error submitting a packet to the muxer\n"
+        "Conversion failed!\n"
+    )
+    tail = tools._stderr_tail(stderr)
+    assert "YUV444P not supported" in tail
+    assert "No capable devices found" in tail
+
+
+def test_stderr_tail_falls_back_to_raw_when_all_generic() -> None:
+    """Same ogólniki → mniej niż 2 linie sensowne → surowe ostatnie linie (nie pusto)."""
+    stderr = "Error submitting a packet to the muxer\nConversion failed!\n"
+    tail = tools._stderr_tail(stderr)
+    assert "Conversion failed!" in tail  # nie gubimy wszystkiego, gdy nic „sensownego" nie zostało
 
 
 def test_probe_encoder_result_ok_ignores_warnings(monkeypatch: pytest.MonkeyPatch) -> None:

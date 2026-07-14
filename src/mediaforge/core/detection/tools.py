@@ -69,14 +69,35 @@ def _run_capture(cmd: list[str], timeout: int) -> tuple[int, str]:
         return 127, ""
 
 
-def _stderr_tail(stderr: str, lines: int = 2) -> str:
-    """Ostatnie ``lines`` niepustych linii stderr (realny powód porażki do doctora)."""
-    tail = [ln.strip() for ln in stderr.strip().splitlines() if ln.strip()]
-    return " | ".join(tail[-lines:])
+# Frazy czysto ogólnikowe — schowają właściwą przyczynę (nazwę techniczną), która pada wyżej.
+# Prosty filtr listy fraz wystarcza (bez parsowania stderr).
+_GENERIC_STDERR_PHRASES = ("conversion failed", "error submitting")
+
+
+def _stderr_tail(stderr: str, lines: int = 8) -> str:
+    """Ogon stderr z realną PRZYCZYNĄ porażki (do doctora), nie z ogólnikiem.
+
+    Bierze ostatnie ``lines`` niepustych linii i pomija czysto ogólnikowe („Conversion failed!",
+    „Error submitting…"), bo właściwy komunikat („YUV444P not supported", „No capable devices")
+    pada wyżej. Gdy po filtrze zostaje < 2 linie, zwraca surowe ostatnie 4 (bez przekombinowania).
+    """
+    non_empty = [ln.strip() for ln in stderr.strip().splitlines() if ln.strip()]
+    recent = non_empty[-lines:]
+    meaningful = [ln for ln in recent if not any(p in ln.lower() for p in _GENERIC_STDERR_PHRASES)]
+    chosen = meaningful if len(meaningful) >= 2 else non_empty[-4:]
+    return " | ".join(chosen)
 
 
 def _encoder_probe_cmd(name: str, ffmpeg: str) -> list[str]:
-    """Komenda kodująca 1 klatkę ``testsrc`` do ``null`` — próba REALNEJ inicjalizacji enkodera."""
+    """Komenda kodująca 1 klatkę ``testsrc`` do ``null`` — próba REALNEJ inicjalizacji enkodera.
+
+    ZASADA: sonda ma ODTWARZAĆ WARUNKI REALNEGO PIPELINE'U nagrywania (``format=yuv420p``, sensowne
+    wymiary ``640x360``), nie „cokolwiek testsrc wyprodukuje". Każda rozbieżność sonda↔pipeline to
+    przyszły fałszywy werdykt — zaliczyliśmy już dwa: ``64x64`` (poniżej minimum NVENC) oraz brak
+    ``format`` (testsrc jest RGB → FFmpeg konwertował do YUV444, na czym ``av1_nvenc`` padał
+    „YUV444P not supported" na SPRAWNYM enkoderze). ``-vf format=yuv420p`` jest DOKŁADNIE tym, co
+    robi łańcuch nagrywania (:func:`build_video_filter`) — jawny i identyczny z realem.
+    """
     return [
         ffmpeg,
         "-hide_banner",
@@ -84,6 +105,8 @@ def _encoder_probe_cmd(name: str, ffmpeg: str) -> list[str]:
         "lavfi",
         "-i",
         f"testsrc=duration=0.1:size={_ENCODER_PROBE_SIZE}:rate=30",
+        "-vf",
+        "format=yuv420p",  # jak w realnym pipeline — inaczej testsrc(RGB)→YUV444 wywala av1_nvenc
         "-frames:v",
         "1",
         "-c:v",
