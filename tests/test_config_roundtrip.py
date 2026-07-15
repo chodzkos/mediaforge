@@ -76,6 +76,21 @@ def test_vlm_models_roundtrip_and_defaults(tmp_path: Path) -> None:
     assert cfg_mod.get_vlm_model_cloud(reloaded) == "gemini/gemini-vision"
 
 
+def test_prompt_suffix_keys_independent(tmp_path: Path) -> None:
+    """Sufiksy streszczeń i VLM to OSOBNE klucze: brak → None (=default), a jeden nie dziedziczy
+    drugiego. Wyczyszczenie sufiksu streszczeń (``""``) NIE dotyka VLM — regresja na footgun #76."""
+    cfg = _fresh(tmp_path / "config.json")
+
+    # Brak obu kluczy → oba None (sygnał „użyj domyślnego /no_think z pola dataclassy").
+    assert cfg_mod.get_summary_prompt_suffix(cfg) is None
+    assert cfg_mod.get_vlm_prompt_suffix(cfg) is None
+
+    # Streszczenia jadą modelem nie-rozumującym → jawne wyłączenie sufiksu; VLM nietknięty.
+    cfg[cfg_mod._SUMMARY_PROMPT_SUFFIX_KEY] = ""
+    assert cfg_mod.get_summary_prompt_suffix(cfg) == ""  # jawnie wyłączony (respektowany)
+    assert cfg_mod.get_vlm_prompt_suffix(cfg) is None  # NIE odziedziczył wyłączenia → default VLM
+
+
 def test_record_preroll_default_and_override(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     assert cfg_mod.get_record_preroll_sec(_fresh(path)) == 5  # domyślnie 5 s (transient ~6 s)

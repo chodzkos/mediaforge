@@ -76,6 +76,22 @@ mówi, jak je postawić i jak naprawiać typowe problemy.
 - Po `git pull`/merge: ZAMKNIJ i uruchom GUI ponownie (proces trzyma kod z chwili startu —
   "naprawione na dysku" ≠ "naprawione w działającym oknie").
 
+### Sufiksy system-promptu (`/no_think`) — klucze dla zaawansowanych
+- **`summary_prompt_suffix`** (streszczenia/notatki-LLM) i **`vlm_prompt_suffix`** (analiza slajdów
+  VLM) to OSOBNE klucze. Oba domyślnie `/no_think` — soft-switch qwen3, wyłącza tryb rozumowania,
+  by cały budżet tokenów szedł w treść (bez tego model rozumujący zjada limit na rozumowanie i
+  zwraca pustą treść: „Model zużył cały limit tokenów na rozumowanie").
+- **Nie ma pól w dialogu Ustawień** (świadomie — klucze dla zaawansowanych). Ustawiasz je tylko
+  przez obiekt configu (jak wyżej).
+- **Kiedy czyścić (`c.set('KLUCZ', '')`)**: gdy dany tor jedzie modelem **nie-rozumującym**
+  (np. streszczenia przez chmurowy model bez trybu myślenia) — wtedy `/no_think` jest zbędny lub
+  niepożądany. Pusty string (`''`) = jawne wyłączenie sufiksu; usunięcie klucza (albo brak) =
+  powrót do domyślnego `/no_think`.
+- **Klucze są niezależne**: wyczyszczenie `summary_prompt_suffix` (bo streszczasz modelem
+  nie-rozumującym) **nie dotyka** `vlm_prompt_suffix` — VLM (qwen3-vl) dalej dostaje `/no_think`,
+  którego KONIECZNIE potrzebuje. (Dawniej jeden wspólny klucz sterował oboma torami — patrz
+  CHANGELOG, zmiana zachowania.)
+
 ## Szybka diagnoza
 1. `uv run mediaforge-cli doctor` — stan wszystkiego; hinty przy ✗ pokazują przyczynę.
 2. Streszczenie/notatka wisi lub pada → czy gateway chodzi? (terminal LiteLLM, /v1/models)
