@@ -13,7 +13,7 @@ dependencies = [
     # Wspólny standard GUI — paleta, ThemeManager, titlebar DWM, dialogi, widgety.
     # Pin do SHA (tag w komentarzu; tag jest mutowalny). Podniesienie wersji = osobny commit chore: + testy.
     # platformdirs wchodzi tranzytywnie z kitu (jego config.py go używa).
-    "chodzkos-gui-kit[qt] @ git+https://github.com/chodzkos/gui-kit@12c6b30cfa8f4c00f21b31c583cd70e70b0d1379",  # v0.5.2
+    "chodzkos-gui-kit[qt] @ git+https://github.com/chodzkos/gui-kit@bb40fa67294c5fd6632d11543902a2d9b69665db",  # v0.5.3
     "keyring>=25",           # sekrety w systemowym magazynie poświadczeń
     "yt-dlp>=2026.7.4",        # pobieranie (etap późny); luźny pin — patrz CLAUDE.md
     "typer>=0.12",           # CLI
@@ -63,6 +63,11 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mediaforge"]
+# Runbook infrastruktury (docs/) dołączony do wheela jako package-data, żeby Pomoc (F1) mogła
+# go wyrenderować przez importlib.resources także w zainstalowanej aplikacji (poza checkoutem).
+# Jeden plik prawdy: docs/INFRASTRUKTURA.md; force-include mapuje go do pakietu przy buildzie.
+[tool.hatch.build.targets.wheel.force-include]
+"docs/INFRASTRUKTURA.md" = "mediaforge/_resources/INFRASTRUKTURA.md"
 
 [tool.ruff]
 line-length = 100
