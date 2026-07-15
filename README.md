@@ -41,12 +41,12 @@ Pojedynczy pakiet z trzema warstwami: rdzeń niezależny od UI (`core/`), GUI (`
 ## Instalacja (dev)
 
 ```bash
-uv sync                    # pociąga też chodzkos-gui-kit z gita (pin do taga v0.5.0)
+uv sync                    # pociąga też chodzkos-gui-kit z gita (pin po SHA, komentarz # vX.Y.Z)
 uv run mediaforge          # GUI
 uv run mediaforge-cli --help
 ```
 
-Wymagania zewnętrzne (poza PyPI): **FFmpeg** w PATH; opcjonalnie build **whisper.cpp** z CUDA; sterowniki NVIDIA dla NVENC. Podniesienie wersji gui-kit = osobny commit `chore:` + przebieg testów (pin do taga, nigdy `main`).
+Wymagania zewnętrzne (poza PyPI): **FFmpeg** w PATH; opcjonalnie build **whisper.cpp** z CUDA; sterowniki NVIDIA dla NVENC. Podniesienie wersji gui-kit = osobny commit `chore:` + przebieg testów. Pin po **SHA** commitu z komentarzem wersji (`git+...@<SHA>  # vX.Y.Z`), nigdy sam tag i nigdy `main` — tagi są mutowalne, SHA nie (supply-chain, audyt 07.2026).
 
 ## Konwencje projektu
 

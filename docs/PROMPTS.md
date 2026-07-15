@@ -11,7 +11,7 @@ Przeczytaj docs/CLAUDE.md, docs/ARCHITECTURE.md, docs/LEGAL_BOUNDARIES.md.
 Pracuj na gałęzi feat/s0-foundation.
 
 Zbuduj fundament pakietu mediaforge:
-0. `uv sync` (pociąga chodzkos-gui-kit z gita, pin do taga v0.5.0 — jest w pyproject).
+0. `uv sync` (pociąga chodzkos-gui-kit z gita, pin po SHA z komentarzem wersji — jest w pyproject).
 1. Layout src/mediaforge/{core,gui,cli} zgodny z ARCHITECTURE.md; core BEZ importów Qt.
 2. core/config.py: JEST w repo jako cienka warstwa nad chodzkos_gui_kit.config.Config —
    dodaj typowane akcesory dla kluczy mediaforge (motyw, ostatnie katalogi, profil obliczeniowy
