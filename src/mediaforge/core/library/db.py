@@ -47,6 +47,10 @@ _RECORDINGS_COLUMNS: dict[str, str] = {
     "summary_status": "TEXT NOT NULL DEFAULT 'none'",
     "summary_path": "TEXT",
     "summary_parts_path": "TEXT",  # streszczenia cząstkowe (map-reduce) — nullable → ALTER dorabia
+    # Notatka per slajd (S6). NOT NULL + stały DEFAULT / nullable → ALTER ADD COLUMN dorabia je
+    # starej bazie (ensure_schema), stary wiersz dostaje 'none'/NULL.
+    "notes_status": "TEXT NOT NULL DEFAULT 'none'",
+    "notes_path": "TEXT",
     # cloud_ok jako INTEGER (0/1) z DEFAULT 0 — stały default, więc ALTER ADD COLUMN dorabia
     # go starej bazie (stary wiersz dostaje 0 = wrażliwy/lokalnie, zgodnie z fail-safe).
     "cloud_ok": "INTEGER NOT NULL DEFAULT 0",

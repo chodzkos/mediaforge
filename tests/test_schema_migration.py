@@ -69,6 +69,28 @@ def test_cloud_ok_added_to_old_db_defaults_zero(tmp_path: Path) -> None:
     assert row[0] == 0  # stary wiersz jest wrażliwy (lokalnie), nie 1
 
 
+def test_notes_status_added_to_old_db_defaults_none(tmp_path: Path) -> None:
+    """notes_status/notes_path (S6) dorabiane na starej bazie; wiersz dostaje 'none'/NULL."""
+    db = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE recordings (id INTEGER PRIMARY KEY, title TEXT)")
+    conn.execute("INSERT INTO recordings (title) VALUES ('sprzed S6')")
+    conn.commit()
+    conn.close()
+
+    RecordingStore(db)  # ensure_schema dorabia notes_status/notes_path (nullable/const default)
+    assert {"notes_status", "notes_path"} <= _columns(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        row = conn.execute(
+            "SELECT notes_status, notes_path FROM recordings WHERE title = 'sprzed S6'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "none" and row[1] is None  # brak notatki dla starego wiersza
+
+
 def _profile_columns(db: Path) -> set[str]:
     conn = sqlite3.connect(db)
     try:
