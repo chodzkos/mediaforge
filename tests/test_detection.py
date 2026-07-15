@@ -104,6 +104,24 @@ def test_render_report_text() -> None:
     assert "System:" in text and "Tier" in text and "yt-dlp:" in text
 
 
+def test_render_report_shows_summary_and_notes_models() -> None:
+    """Doctor wypisuje skonfigurowane modele streszczeń ORAZ notatek VLM (lokalny/chmurowy)."""
+    rep = detection.check_all(
+        summary_model_local="ollama/qwen3:27b",
+        vlm_model_local="ollama/qwen-vl-local",
+        vlm_model_cloud="gemini/gemini-vision",
+    )
+    text = report.render_report(rep)
+    assert "streszczenia: lokalny ollama/qwen3:27b" in text
+    assert "notatki: VLM lokalny ollama/qwen-vl-local · chmura gemini/gemini-vision" in text
+
+
+def test_render_report_notes_without_models_shows_local_only() -> None:
+    """Brak modeli VLM → linia notatek pokazuje „— (tylko lokalnie)" (jak streszczenia)."""
+    text = report.render_report(detection.check_all())
+    assert "notatki: VLM lokalny — · chmura — (tylko lokalnie)" in text
+
+
 def _report_with_whisper(*, model_set: bool, runtime: str) -> dict[str, object]:
     return {
         "whispercpp": {"available": True, "path": "/usr/bin/whisper-cli"},

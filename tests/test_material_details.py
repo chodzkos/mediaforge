@@ -69,3 +69,56 @@ def test_panel_scrolls_instead_of_overlapping(
     gallery_top = panel._slides_gallery.mapTo(content, panel._slides_gallery.rect().topLeft()).y()
     assert gallery_top >= bots[-1]
     assert panel._slides_gallery.count() == 6
+
+
+def test_notes_button_enabled_only_with_slides_and_transcript(qtbot: QtBot, tmp_path: Path) -> None:
+    """„Notatka" aktywna tylko, gdy są slajdy ORAZ transkrypt done; notes.md w podglądzie."""
+    folder = tmp_path / "mat"
+    slides_dir = folder / SLIDES_DIRNAME
+    slides_dir.mkdir(parents=True)
+    (slides_dir / "s1.png").write_bytes(b"X")
+    slides = (Slide("s1.png", 1, 30),)
+    base = MaterialMetadata(title="M", created_at="2026-07-05T10:00:00+00:00", slides=slides)
+    write_metadata(folder, base)
+
+    panel = MaterialDetailsPanel()
+    qtbot.addWidget(panel)
+
+    # Slajdy są, ale brak transkryptu → „Notatka" nieaktywna.
+    panel.load(folder, base)
+    assert panel.notes_btn.isEnabled() is False
+
+    # Slajdy + transkrypt done → aktywna.
+    with_tr = MaterialMetadata(
+        title="M",
+        created_at="2026-07-05T10:00:00+00:00",
+        transcript_status="done",
+        transcript_json="M.json",
+        slides=slides,
+    )
+    panel.load(folder, with_tr)
+    assert panel.notes_btn.isEnabled() is True
+
+    # Transkrypt done, ale BEZ slajdów → nieaktywna.
+    no_slides = MaterialMetadata(
+        title="M",
+        created_at="2026-07-05T10:00:00+00:00",
+        transcript_status="done",
+        transcript_json="M.json",
+    )
+    panel.load(folder, no_slides)
+    assert panel.notes_btn.isEnabled() is False
+
+    # notes.md renderuje się w podglądzie (utf-8-sig, jak streszczenie).
+    (folder / "notes.md").write_text("# Notatka\n\n## Slajd 1", encoding="utf-8-sig")
+    done = MaterialMetadata(
+        title="M",
+        created_at="2026-07-05T10:00:00+00:00",
+        transcript_status="done",
+        transcript_json="M.json",
+        notes_status="done",
+        notes_path="notes.md",
+        slides=slides,
+    )
+    panel.load(folder, done)
+    assert "Notatka" in panel._notes_view.toMarkdown()

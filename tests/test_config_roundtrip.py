@@ -57,6 +57,25 @@ def test_provider_assignments_roundtrip(tmp_path: Path) -> None:
     assert spec.supports_vision is True
 
 
+def test_vlm_models_roundtrip_and_defaults(tmp_path: Path) -> None:
+    """Modele VLM (lokalny/chmurowy) round-trip; brak = None; vlm_max_tokens domyślnie 2048."""
+    path = tmp_path / "config.json"
+    cfg = _fresh(path)
+
+    # Domyślnie brak modeli, limit tokenów 2048 (korekta pre-flight dla gęstych slajdów).
+    assert cfg_mod.get_vlm_model_local(cfg) is None
+    assert cfg_mod.get_vlm_model_cloud(cfg) is None
+    assert cfg_mod.get_vlm_max_tokens(cfg) == 2048
+
+    cfg_mod.set_vlm_model_local(cfg, "ollama/qwen-vl-local")
+    cfg_mod.set_vlm_model_cloud(cfg, "gemini/gemini-vision")
+    cfg.save_now()
+
+    reloaded = _fresh(path)
+    assert cfg_mod.get_vlm_model_local(reloaded) == "ollama/qwen-vl-local"
+    assert cfg_mod.get_vlm_model_cloud(reloaded) == "gemini/gemini-vision"
+
+
 def test_record_preroll_default_and_override(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     assert cfg_mod.get_record_preroll_sec(_fresh(path)) == 5  # domyślnie 5 s (transient ~6 s)

@@ -77,6 +77,8 @@ def doctor(as_json: bool = typer.Option(False, "--json")) -> None:
         whisper_model=config.get_whisper_model(cfg),
         summary_model_local=config.get_summary_model_local(cfg),
         summary_model_cloud=config.get_summary_model_cloud(cfg),
+        vlm_model_local=config.get_vlm_model_local(cfg),
+        vlm_model_cloud=config.get_vlm_model_cloud(cfg),
         probe_whisper=True,
         probe_encoders=True,
     )

@@ -54,6 +54,9 @@ _SUMMARY_TIMEOUT_KEY = "summary_timeout_sec"  # timeout żądania do gatewaya (d
 _SUMMARY_PROMPT_SUFFIX_KEY = "summary_prompt_suffix"  # sufiks system-promptu (qwen3: /no_think)
 _SUMMARY_CHUNK_CHARS_KEY = "summary_chunk_chars"  # próg podziału transkryptu (map-reduce)
 _SUMMARY_REDUCE_MAX_TOKENS_KEY = "summary_reduce_max_tokens"  # osobny budżet wyjścia fazy reduce
+_VLM_MODEL_LOCAL_KEY = "vlm_model_local"  # model VLM lokalny (np. ollama/qwen-vl-local)
+_VLM_MODEL_CLOUD_KEY = "vlm_model_cloud"  # model VLM chmurowy (None = brak trasy chmurowej)
+_VLM_MAX_TOKENS_KEY = "vlm_max_tokens"  # limit tokenów odpowiedzi VLM (gęste slajdy → 2048)
 
 # ~8k tokenów promptu — komfortowo w oknie 32k z miejscem na wyjście; powyżej tego progu
 # streszczenie idzie ścieżką map-reduce (kawałki po granicach segmentów), poniżej: jeden request.
@@ -272,6 +275,38 @@ def get_summary_reduce_max_tokens(cfg: Config) -> int:
     if isinstance(value, int) and value > 0:
         return value
     return DEFAULT_SUMMARY_REDUCE_MAX_TOKENS
+
+
+def get_vlm_model_local(cfg: Config) -> str | None:
+    """Model VLM lokalny (analiza slajdów przez gateway, np. ``ollama/qwen-vl-local``) lub None."""
+    value = cfg.get(_VLM_MODEL_LOCAL_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def set_vlm_model_local(cfg: Config, model: str) -> None:
+    """Zapisuje nazwę modelu VLM lokalnego."""
+    cfg[_VLM_MODEL_LOCAL_KEY] = model
+
+
+def get_vlm_model_cloud(cfg: Config) -> str | None:
+    """Model VLM chmurowy (przez gateway) lub ``None`` — ``None`` = brak trasy chmurowej."""
+    value = cfg.get(_VLM_MODEL_CLOUD_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def set_vlm_model_cloud(cfg: Config, model: str) -> None:
+    """Zapisuje nazwę modelu VLM chmurowego."""
+    cfg[_VLM_MODEL_CLOUD_KEY] = model
+
+
+def get_vlm_max_tokens(cfg: Config) -> int:
+    """Limit tokenów odpowiedzi VLM (domyślnie 2048).
+
+    2048 (nie 1024): gęste slajdy tabelaryczne potrzebują zapasu na pełny odczyt sekcji TEKST —
+    za mały limit ucinał odczyt (zmierzone w pre-flight). Wartość <= 0 (błędna) spada na default.
+    """
+    value = cfg.get(_VLM_MAX_TOKENS_KEY)
+    return value if isinstance(value, int) and value > 0 else 2048
 
 
 def get_record_preroll_sec(cfg: Config) -> int:
