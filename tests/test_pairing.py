@@ -44,13 +44,23 @@ def test_segment_on_boundary_assigned_by_midpoint() -> None:
     assert [s.text for s in windows[1].segments] == ["right"]
 
 
-def test_unsorted_slides_are_ordered() -> None:
-    """Nieposortowane wejście slajdów → okna posortowane rosnąco po czasie."""
-    slides = [_slide(3, 200), _slide(1, 0), _slide(2, 100)]
-    windows = pair_slides_with_segments(slides, [])
+def test_unsorted_slides_sorted_by_time() -> None:
+    """Nieposortowane wejście slajdów → okna po czasie; sort wpływa też na PRZYNALEŻNOŚĆ segmentu.
 
-    assert [w.slide.timestamp_s for w in windows] == [0, 100, 200]
-    assert [w.end_s for w in windows] == [100, 200, None]
+    Slajdy podane w kolejności indeksów [(3,200),(1,0),(2,40)] (mp.pl daje posortowane, ale ręczny
+    attach-slides z dziwnymi nazwami — niekoniecznie). Segment ze środkiem 50 należy do okna
+    slajdu z ts=40 (drugi w czasie), NIE do slajdu podanego jako pierwszy na wejściu.
+    """
+    slides = [_slide(3, 200), _slide(1, 0), _slide(2, 40)]
+    windows = pair_slides_with_segments(slides, [_seg(45, 55, "mid50")])
+
+    # Okna w porządku CZASOWYM (nie wejściowym) — granice zależą od posortowania.
+    assert [w.slide.timestamp_s for w in windows] == [0, 40, 200]
+    assert [w.end_s for w in windows] == [40, 200, None]
+    # Segment (środek 50) trafia do okna [40, 200), czyli slajdu ts=40 — dowód, że sort działa.
+    assert [s.text for s in windows[0].segments] == []
+    assert [s.text for s in windows[1].segments] == ["mid50"]
+    assert [s.text for s in windows[2].segments] == []
 
 
 def test_slides_without_timestamp_yield_no_windows() -> None:

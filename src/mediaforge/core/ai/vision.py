@@ -180,8 +180,11 @@ class VisionClient:
     def analyze(
         self, image_path: Path, route: ModelRoute, *, prompt: str = SLIDE_ANALYSIS_PROMPT
     ) -> str:
-        """POST obrazu slajdu i zwrot surowej treści analizy (parsowanie do pól osobno).
+        """Prymityw NISKOPOZIOMOWY: obraz + (dowolny) ``prompt`` → SUROWY tekst modelu (bez pól).
 
+        To warstwa transportu VLM: dowolna instrukcja przez ``prompt``, zwrot niesparsowanej treści.
+        Użyj, gdy potrzebujesz innej instrukcji niż analiza slajdu albo surowej odpowiedzi.
+        Dla standardowej analizy slajdu (TYTUŁ/TEKST/OPIS → pola) wołaj :meth:`analyze_slide`.
         Reużywa wspólny rdzeń transportu (:func:`~core.ai.gateway.post_chat`) i ekstraktor treści
         (:func:`~core.ai.gateway.parse_chat_content`) — ta sama detekcja pustej treści/ucięcia co
         w streszczeniach (qwen3-vl bez ``/no_think`` zjada budżet na rozumowanie).
@@ -197,5 +200,8 @@ class VisionClient:
         return parse_chat_content(data, max_tokens=self.config.max_tokens)
 
     def analyze_slide(self, image_path: Path, route: ModelRoute) -> SlideAnalysis:
-        """Analiza slajdu rozbita na pola (TYTUŁ/TEKST/OPIS) — wrapper na :meth:`analyze`."""
+        """Prymityw WYSOKOPOZIOMOWY (używany przez handler notatek): stały prompt analizy slajdu →
+        parsowanie do pól :class:`SlideAnalysis` (TYTUŁ/TEKST/OPIS). Różni się od :meth:`analyze`
+        tym, że NIE przyjmuje własnego promptu i zwraca STRUKTURĘ, nie surowy tekst.
+        """
         return parse_slide_analysis(self.analyze(image_path, route))
