@@ -95,11 +95,12 @@ class LibraryWidget(QWidget):
         self._jobs_store = JobStore(db_path)
         self._queue = JobQueue(self._jobs_store, lanes=DEFAULT_LANES, routes=DEFAULT_ROUTES)
         self._queue.register(JOB_IMPORT, make_import_handler(ImporterEngine(store=self._store)))
-        self._queue.register(JOB_TRANSCRIBE, make_transcribe_handler(self._store, self._backend()))
         self._queue.register(
             JOB_DOWNLOAD, make_download_handler(DownloaderEngine(store=self._store))
         )
-        self.reload_ai_handlers()  # JOB_SUMMARIZE + JOB_NOTES z configu (re-rejestrowalne)
+        # JOB_TRANSCRIBE + JOB_SUMMARIZE + JOB_NOTES czytają config przy rejestracji — wołane tu
+        # i po zapisie Ustawień, żeby zmiana modelu/ścieżek działała od następnego zadania.
+        self.reload_ai_handlers()
         self._seen: dict[int, str] = {}
         self._poll = QTimer(self)
         self._poll.setInterval(800)
@@ -117,13 +118,15 @@ class LibraryWidget(QWidget):
         )
 
     def reload_ai_handlers(self) -> None:
-        """(Re)rejestruje handlery AI (streszczenie + notatki) z configu i świeżych klientów.
+        """(Re)rejestruje handlery AI (transkrypcja + streszczenie + notatki) z configu i klientów.
 
         Wołane przy starcie i po zapisie Ustawień. ``JobQueue.register`` nadpisuje handler dla typu,
         więc następne zadanie użyje nowych modeli/gatewaya/limitów — bez restartu aplikacji (job już
-        uruchomiony dokańcza się starym handlerem). Klienci (``SummaryClient``/``VisionClient``)
-        czytają config przy budowie, więc też odświeżają base_url/timeout/limity.
+        uruchomiony dokańcza się starym handlerem). Backend whisper (``_backend``) i klienci
+        (``SummaryClient``/``VisionClient``) czytają config przy budowie, więc odświeżają
+        binarkę/model whisper, base_url/timeout/limity — dlatego transkrypcja też jest tutaj.
         """
+        self._queue.register(JOB_TRANSCRIBE, make_transcribe_handler(self._store, self._backend()))
         self._queue.register(
             JOB_SUMMARIZE,
             make_summarize_handler(
@@ -504,7 +507,8 @@ class LibraryWidget(QWidget):
             return
         if not cfg_mod.get_whisper_model(self._config):
             self._log.append_line(
-                "Ustaw whisper_model w configu (sprawdź `doctor`) — brak modelu whisper.cpp.",
+                "Wskaż model whisper.cpp w Ustawieniach (ikona zębatki → Transkrypcja) — "
+                "brak modelu.",
                 "error",
             )
             return
