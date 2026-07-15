@@ -6,6 +6,9 @@ projekt stosuje [Semantic Versioning](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+### Fixed
+- **Wywołanie Pomocy/O programie zgodne z GUI_STANDARD §6 (ikonka w pasku, nie QMenuBar).** Pierwsza wersja Pomocy dodała klasyczne menu „Pomoc" w `QMenuBar` (lewy górny róg) — niezgodne z §6 i z resztą ekosystemu (pdf2md, EpubForge trzymają meta-funkcje jako ikonkę w prawym górnym rogu obok przełącznika motywu). Teraz: ikonka **„ⓘ"** w górnym pasku (po prawej, obok motywu) z rozwijanym menu „Pomoc" (F1 — skrót zachowany, akcja zarejestrowana na oknie) i „O programie"; `QMenuBar` usunięty w całości (bez pustego paska). Zachowanie okien bez zmian — zmienia się wyłącznie miejsce wywołania. Wzorzec ikonki+menu jest powielany ad-hoc w pdf2md/EpubForge/mediaforge → zgłoszony do ROADMAP kitu jako kandydat do ekstrakcji (`HelpButton`/`CornerMenu`).
+
 ### Added
 - **Pomoc w aplikacji (F1) + runbook infrastruktury + „O programie".** Cała wiedza operacyjna (instalacja LiteLLM/Ollama/whisper.cpp, pułapki wersji FFmpeg, VB-Cable) trafia z rozmów do repo — koniec szukania w historii czatu przy każdym restarcie infrastruktury.
   - **`docs/INFRASTRUKTURA.md`** — runbook: FFmpeg (Pascal → 7.x release, nie 8.x/git), Ollama (pułapka WSL/systemd, modele), LiteLLM (instalacja z Pillow, config, start), whisper.cpp (klucze configu + build CUDA), VB-Cable, cookies Firefox, konfiguracja przez obiekt, szybka diagnoza.
