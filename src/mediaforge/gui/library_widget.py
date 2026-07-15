@@ -169,8 +169,12 @@ class LibraryWidget(QWidget):
             max_tokens=cfg_mod.get_summary_max_tokens(self._config),
             timeout=cfg_mod.get_summary_timeout(self._config),
             api_key=secrets.get_secret(secrets.GATEWAY_MASTER_KEY),
-            prompt_suffix=cfg_mod.get_summary_prompt_suffix(self._config),
         )
+        # Reguła „None = default z kodu": sufiks nadpisuje default dataclassy TYLKO gdy ustawiony
+        # (nie-None); None → zostaje ``/no_think``; "" → jawne wyczyszczenie respektowane.
+        suffix = cfg_mod.get_summary_prompt_suffix(self._config)
+        if suffix is not None:
+            config.prompt_suffix = suffix
         return SummaryClient(config)
 
     def _vision_client(self) -> VisionClient:
@@ -184,8 +188,13 @@ class LibraryWidget(QWidget):
             max_tokens=cfg_mod.get_vlm_max_tokens(self._config),
             timeout=cfg_mod.get_summary_timeout(self._config),
             api_key=secrets.get_secret(secrets.GATEWAY_MASTER_KEY),
-            prompt_suffix=cfg_mod.get_summary_prompt_suffix(self._config),
         )
+        # Jak w streszczeniu: sufiks (``/no_think`` — dla qwen3-vl KONIECZNY) nadpisuje default
+        # dataclassy TYLKO gdy ustawiony (nie-None); None → zostaje default. Bez tego None z
+        # configu skasowałby ``/no_think`` i VLM zjadałby cały budżet na rozumowanie (pusta treść).
+        suffix = cfg_mod.get_summary_prompt_suffix(self._config)
+        if suffix is not None:
+            config.prompt_suffix = suffix
         return VisionClient(config)
 
     # ── Cykl życia kolejki (start z okna głównego; nie w testach) ─────────────
