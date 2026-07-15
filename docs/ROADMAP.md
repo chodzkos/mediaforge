@@ -62,12 +62,14 @@ Szkielet pakietu (`core`/`gui`/`cli`), `pyproject` + uv, ruff/mypy/pytest, CI (W
 
 **Akceptacja (rdzeń):** pobranie bez DRM (wideo/audio) tworzy folder + `metadata.json` + wpis; cookies-from-browser tylko po opt-in, ZERO haseł w aplikacji (test-kontrakt); podcast z RSS kolejkuje wybrane odcinki; profil domeny prefilluje metadane; „Aktualizuj yt-dlp" rozpoznaje wariant. Bramka zielona (ruff + mypy --strict + pytest).
 
-## ☐ S6 — Slajdy (detekcja + VLM)
-**Gałąź:** `feat/s6-slides`
+## ◨ S6 — Slajdy (VLM) — notatki ze slajdów ZREALIZOWANE, ekstrakcja klatek odroczona
+**Gałąź:** `feat/s6-slide-notes`
 
-Detekcja zmian klatek (FFmpeg), zrzut unikalnych slajdów. Opis przez **VLM** (lokalnie lub chmura przez LiteLLM) — semantyczny opis schematu/wykresu, nie surowy OCR. Synchronizacja opisów z timestampami transkryptu → `slides.md`. Etap opcjonalny, VRAM sekwencyjnie.
+**☑ Notatki per slajd (zrealizowane).** Dla materiału ze slajdami (`slides/`, podłączone ręcznie — feat/attach-slides) + transkryptem powstaje `notes.md`: analiza slajdu przez **VLM** (lokalnie lub chmura przez gateway LiteLLM — semantyczny odczyt TYTUŁ/TEKST/OPIS, nie surowy OCR), zsynchronizowana z timestampami segmentów whispera (mapa slajd↔czas → okna → komentarz prowadzącego per slajd). Przepływ DWUFAZOWY (wszystkie VLM, potem wszystkie LLM) — pipeline nie ładuje VLM równocześnie z LLM (sequential VRAM, `JOB_NOTES` na linii GPU). Prywatność: TEN SAM mechanizm co S4 (`resolve_route` + `assert_route_allowed`, fail-safe lokalnie). Format wg „definicji celu S6" niżej.
 
-**Akceptacja:** dla wykładu ze slajdami powstaje `slides.md` z opisami i czasami; pipeline nie ładuje VLM równocześnie z LLM.
+**☐ Ekstrakcja klatek z wideo (odroczone → backlog).** Detekcja zmian klatek (FFmpeg scene/select) + zrzut unikalnych slajdów dla materiałów BEZ podłączonych slajdów — świadomie poza tym zakresem (notatki działają już na slajdach z feat/attach-slides). Wraca, gdy pojawi się realna potrzeba materiałów bez slajdów.
+
+**Akceptacja (notatki ze slajdów):** dla wykładu ze slajdami + transkryptem powstaje `notes.md` z sekcją per slajd (obraz, czas, komentarz prowadzącego, najważniejsze punkty); pipeline nie ładuje VLM równocześnie z LLM. Bramka zielona (ruff + mypy --strict + pytest).
 
 ## ☐ S7 — Wyszukiwanie po bibliotece
 **Gałąź:** `feat/s7-search`
