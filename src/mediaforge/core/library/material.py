@@ -48,6 +48,9 @@ class MaterialMetadata:
     # Streszczenia cząstkowe (map-reduce długiego materiału) — plik obok summary.md, obecny
     # TYLKO gdy streszczenie szło ścieżką chunked. Brak = ścieżka pojedyncza (jeden request).
     summary_parts_path: str | None = None
+    # Notatka per slajd (S6): notes.md w folderze materiału, gdy materiał ma slajdy + transkrypt.
+    notes_status: str = "none"  # none / done
+    notes_path: str | None = None  # plik notes.md w folderze materiału
     # TWARDA GRANICA prywatności (fail-safe): materiał jest wrażliwy, DOPÓKI użytkownik jawnie
     # nie ustawi cloud_ok=True. Brak pola w metadata.json = False (zapomnienie = bezpieczne).
     cloud_ok: bool = False
@@ -83,6 +86,8 @@ class MaterialMetadata:
             "summary_status": self.summary_status,
             "summary_path": self.summary_path,
             "summary_parts_path": self.summary_parts_path,
+            "notes_status": self.notes_status,
+            "notes_path": self.notes_path,
             "cloud_ok": self.cloud_ok,
             "slides": [slide_to_dict(s) for s in self.slides],
             "status": self.status,
@@ -112,6 +117,8 @@ class MaterialMetadata:
             summary_status=str(data.get("summary_status", "none")),
             summary_path=_opt_str(data.get("summary_path")),
             summary_parts_path=_opt_str(data.get("summary_parts_path")),
+            notes_status=str(data.get("notes_status", "none")),
+            notes_path=_opt_str(data.get("notes_path")),
             # Brak pola = False: zapomnienie zgody jest bezpieczne (materiał zostaje lokalnie).
             cloud_ok=bool(data.get("cloud_ok", False)),
             slides=tuple(

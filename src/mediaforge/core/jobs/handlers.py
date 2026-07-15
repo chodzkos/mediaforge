@@ -8,12 +8,14 @@ oznacza job jako błędny (status + komunikat). Bez Qt — GUI tylko odpytuje st
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
 from mediaforge.core.ai.chunking import Chunk, split_segments
+from mediaforge.core.ai.pairing import SlideWindow, pair_slides_with_segments
 from mediaforge.core.ai.routing import ModelRoute, assert_route_allowed, resolve_route
 from mediaforge.core.ai.summarize import (
     SAFE_CONTEXT_TOKENS,
@@ -30,22 +32,28 @@ from mediaforge.core.ai.summarize import (
     summary_start_line,
 )
 from mediaforge.core.ai.transcribe import Segment, TranscribeOptions, TranscriptionBackend
+from mediaforge.core.ai.vision import SlideAnalysis, VisionClient
 from mediaforge.core.config import DEFAULT_SUMMARY_CHUNK_CHARS, DEFAULT_SUMMARY_REDUCE_MAX_TOKENS
 from mediaforge.core.engines.download_engine import DownloaderEngine
 from mediaforge.core.engines.import_engine import ImporterEngine
 from mediaforge.core.jobs.store import Job, JobStore
 from mediaforge.core.library.material import MaterialMetadata, write_metadata
 from mediaforge.core.library.recordings import RecordingStore
+from mediaforge.core.library.slides import SLIDES_DIRNAME, Slide
 
 logger = logging.getLogger("mediaforge")
 
 SUMMARY_FILENAME = "summary.md"
 SUMMARY_PARTS_FILENAME = "summary_parts.md"
+NOTES_FILENAME = "notes.md"
+# Analizy slajdów (VLM) zapisywane przyrostowo — plik maszynowy (JSON, BEZ BOM), wznowienie fazy 1.
+SLIDES_ANALYSIS_FILENAME = "slides_analysis.json"
 
 # Typy zadań (job_type) używane przez kolejkę.
 JOB_TRANSCRIBE = "transcribe"
 JOB_IMPORT = "import"
 JOB_SUMMARIZE = "summarize"
+JOB_NOTES = "notes"
 JOB_DOWNLOAD = "download"
 
 # Linie wykonawcze. GPU = jeden executor (max_workers=1) dzielony przez WSZYSTKIE zadania
@@ -61,6 +69,7 @@ DEFAULT_ROUTES: dict[str, str] = {
     JOB_TRANSCRIBE: GPU_LANE,
     JOB_IMPORT: IO_LANE,
     JOB_SUMMARIZE: GPU_LANE,
+    JOB_NOTES: GPU_LANE,  # VLM+LLM lokalnie → GPU; obie trasy chmurowe nadpisują na IO (enqueue)
     JOB_DOWNLOAD: IO_LANE,  # sieć, nie GPU
 }
 
@@ -347,6 +356,304 @@ def enqueue_summarize(
     route = resolve_route(cloud_ok=meta.cloud_ok, local_model=local_model, cloud_model=cloud_model)
     return jobs.enqueue(
         JOB_SUMMARIZE, recording_id=recording_id, payload={"lane": summarize_lane(route)}
+    )
+
+
+# ── Notatka per slajd (S6): przepływ DWUFAZOWY (VLM → LLM) ─────────────────────
+
+
+def notes_lane(vlm_route: ModelRoute, llm_route: ModelRoute) -> str:
+    """Linia notatki: GPU, gdy KTÓRAKOLWIEK faza (VLM/LLM) idzie lokalnie (model w VRAM).
+
+    Notatka to dwie fazy modelowe (VLM: analiza slajdów, potem LLM: komentarz). Dopóki
+    którakolwiek jest lokalna, job musi trzymać linię GPU (jeden model w VRAM naraz, sequential
+    VRAM). Dopiero OBIE trasy chmurowe → IO (żądania sieciowe nie obciążają GPU, nie blokują
+    transkrypcji). Decyzja przy enqueue (jak w streszczeniu).
+    """
+    return IO_LANE if (vlm_route.is_cloud and llm_route.is_cloud) else GPU_LANE
+
+
+def make_notes_handler(
+    store: RecordingStore,
+    vision_client: VisionClient,
+    summary_client: SummaryClient,
+    *,
+    vlm_local: str | None,
+    vlm_cloud: str | None,
+    llm_local: str | None,
+    llm_cloud: str | None,
+) -> _Handler:
+    """Handler notatki per slajd (S6): DWUFAZOWY (VLM → LLM), zapis ``notes.md`` + statusy.
+
+    Warunki wejścia (odmowa ``ValueError``): materiał ma slajdy (≥1) ORAZ ``transcript_status ==
+    done``. FAZA 1 (VLM): analiza KAŻDEGO slajdu, przyrostowo do ``slides_analysis.json``
+    (wznowienie po błędzie pomija już przeanalizowane). Wszystkie wywołania VLM POD RZĄD, dopiero
+    potem FAZA 2 (LLM) — naprzemienne VLM/LLM co slajd zmuszałoby Ollamę do przeładowania modeli
+    2N razy (thrash VRAM); fazami każdy model ładuje się RAZ. FAZA 2 (LLM): dla slajdu Z
+    timestampem komentarz prowadzącego ze streszczenia segmentów jego okna; slajd BEZ timestampu →
+    sekcja z obrazem + TEKST/OPIS + adnotacja (brak mapy czasowej).
+
+    Egzekucja granicy prywatności jest podwójna dla OBU tras (VLM i LLM): :func:`resolve_route`
+    wybiera trasę wg ``cloud_ok``, a :func:`assert_route_allowed` blokuje wrażliwy materiał na
+    trasie chmurowej — rozstrzygane RAZ na job. ``replace`` na metadanych nie zeruje innych pól.
+    """
+
+    def handler(job: Job, progress: _ProgressCb) -> None:
+        if job.recording_id is None:
+            raise ValueError("notes: brak recording_id w zadaniu")
+        material = store.get_material(job.recording_id)
+        if material is None:
+            raise ValueError(f"notes: materiał {job.recording_id} nie istnieje")
+        folder, meta = material
+        if not meta.slides:
+            raise ValueError("notes: brak slajdów (najpierw podłącz slajdy)")
+        if meta.transcript_status != "done" or not meta.transcript_json:
+            raise ValueError("notes: brak transkryptu (najpierw transkrypcja)")
+
+        vlm_route = resolve_route(
+            cloud_ok=meta.cloud_ok, local_model=vlm_local, cloud_model=vlm_cloud
+        )
+        assert_route_allowed(vlm_route, cloud_ok=meta.cloud_ok)  # ostatnia linia obrony (VLM)
+        llm_route = resolve_route(
+            cloud_ok=meta.cloud_ok, local_model=llm_local, cloud_model=llm_cloud
+        )
+        assert_route_allowed(llm_route, cloud_ok=meta.cloud_ok)  # ostatnia linia obrony (LLM)
+
+        slides = list(meta.slides)
+        segments = read_transcript_segments(folder / meta.transcript_json)
+        windows = pair_slides_with_segments(slides, segments)
+        windows_by_index = {w.slide.index: w for w in windows}
+
+        # Postęp: wykonane / (N_vlm + N_llm). N_llm = liczba slajdów Z timestampem (tylko one idą
+        # przez LLM); slajdy bez timestampu nie liczą się do mianownika (nie wołają modelu).
+        step = _StepProgress(progress, total=len(slides) + len(windows))
+
+        analyses = _run_slide_analysis(vision_client, vlm_route, folder, slides, step)
+        sections = _run_notes_commentary(
+            summary_client, llm_route, slides, windows_by_index, analyses, step
+        )
+        _write_human_md(folder / NOTES_FILENAME, _assemble_notes(meta, sections))
+        _persist_notes(store, folder, meta)
+        progress(1.0)
+
+    return handler
+
+
+class _StepProgress:
+    """Monotoniczny licznik kroków → ``jobs.progress`` (wykonane / total, sufit 0.99 do finału)."""
+
+    def __init__(self, progress: _ProgressCb, *, total: int) -> None:
+        self._progress = progress
+        self._total = total
+        self._done = 0
+
+    def __call__(self) -> None:
+        self._done += 1
+        self._progress(min(0.99, self._done / self._total) if self._total else 0.99)
+
+
+def _run_slide_analysis(
+    vision_client: VisionClient,
+    route: ModelRoute,
+    folder: Path,
+    slides: list[Slide],
+    step: _StepProgress,
+) -> dict[int, SlideAnalysis]:
+    """FAZA 1: analiza VLM każdego slajdu, przyrostowo do ``slides_analysis.json`` (wznowienie).
+
+    Wczytuje dotychczasowe analizy (ponowny job po błędzie pomija już gotowe slajdy), analizuje
+    brakujące i po KAŻDYM przepisuje cały plik (praca częściowa chroniona). Wszystkie wywołania
+    VLM idą tu POD RZĄD — dopiero potem faza 2, żeby Ollama ładowała model VLM tylko raz.
+    """
+    analysis_file = folder / SLIDES_ANALYSIS_FILENAME
+    slides_dir = folder / SLIDES_DIRNAME
+    analyses = _load_slide_analyses(analysis_file)
+    for slide in slides:
+        if slide.index not in analyses:
+            analyses[slide.index] = vision_client.analyze_slide(slides_dir / slide.filename, route)
+            _write_slide_analyses(analysis_file, analyses)  # przyrostowo po każdym slajdzie
+        step()
+    return analyses
+
+
+def _run_notes_commentary(
+    summary_client: SummaryClient,
+    route: ModelRoute,
+    slides: list[Slide],
+    windows_by_index: dict[int, SlideWindow],
+    analyses: dict[int, SlideAnalysis],
+    step: _StepProgress,
+) -> list[str]:
+    """FAZA 2: sekcja per slajd. Slajd Z timestampem → komentarz LLM z okna; bez → adnotacja."""
+    sections: list[str] = []
+    for slide in slides:
+        analysis = analyses.get(slide.index, SlideAnalysis("", "", ""))
+        window = windows_by_index.get(slide.index)
+        if window is None:
+            sections.append(_untimed_section(slide, analysis))
+            continue
+        commentary = _slide_commentary(summary_client, route, window, analysis)
+        sections.append(_timed_section(slide, analysis, window, commentary))
+        step()
+    return sections
+
+
+def _slide_commentary(
+    summary_client: SummaryClient,
+    route: ModelRoute,
+    window: SlideWindow,
+    analysis: SlideAnalysis,
+) -> str | None:
+    """Komentarz prowadzącego dla slajdu (LLM) z analizy slajdu + tekstu segmentów okna.
+
+    Okno bez segmentów (slajd z timestampem, ale bez mowy w tym czasie) → ``None`` bez wywołania
+    modelu (nic do streszczenia). W przeciwnym razie jeden request do istniejącego klienta
+    streszczeń; instrukcja formatu (Komentarz + Najważniejsze punkty) jest w treści usera.
+    """
+    segments_text = " ".join(s.text.strip() for s in window.segments).strip()
+    if not segments_text:
+        return None
+    return summary_client.summarize(_commentary_prompt(analysis, segments_text), route)
+
+
+def _commentary_prompt(analysis: SlideAnalysis, segments_text: str) -> str:
+    """Instrukcja LLM: z analizy slajdu + transkryptu okna → komentarz + najważniejsze punkty."""
+    return (
+        "Na podstawie analizy slajdu wykładu i fragmentu transkryptu z jego czasu napisz notatkę "
+        "po polsku. Zwróć DOKŁADNIE w tym formacie Markdown (bez nagłówka slajdu):\n"
+        "### Komentarz prowadzącego\n<2-4 zdania: co prowadzący mówi w tym fragmencie>\n"
+        "### Najważniejsze punkty\n- <punkt>\n- <punkt>\n(2-5 punktów łączących treść slajdu z "
+        "komentarzem)\n\n"
+        f"ANALIZA SLAJDU:\nTytuł: {analysis.title}\nTekst: {analysis.text}\n"
+        f"Opis: {analysis.description}\n\n"
+        f"TRANSKRYPT (ten zakres czasu):\n{segments_text}"
+    )
+
+
+def _timed_section(
+    slide: Slide, analysis: SlideAnalysis, window: SlideWindow, commentary: str | None
+) -> str:
+    """Sekcja slajdu Z timestampem: nagłówek + czas + obraz + komentarz LLM (wg formatu z CELU)."""
+    body = commentary or "_(brak transkryptu w tym oknie — bez komentarza prowadzącego)_"
+    return (
+        f"{_slide_heading(slide, analysis)}\n"
+        f"Czas: {_time_range(window.start_s, window.end_s)}\n"
+        f"{_slide_image(slide)}\n\n"
+        f"{body}\n"
+    )
+
+
+def _untimed_section(slide: Slide, analysis: SlideAnalysis) -> str:
+    """Sekcja slajdu BEZ timestampu: obraz + TEKST/OPIS z VLM + adnotacja o braku mapy czasowej."""
+    parts = [_slide_heading(slide, analysis), _slide_image(slide)]
+    if analysis.text:
+        parts.append(f"### Tekst slajdu\n{analysis.text}")
+    if analysis.description:
+        parts.append(f"### Opis\n{analysis.description}")
+    parts.append("_(brak mapy czasowej — bez komentarza prowadzącego)_")
+    return "\n\n".join(parts) + "\n"
+
+
+def _slide_heading(slide: Slide, analysis: SlideAnalysis) -> str:
+    """Nagłówek sekcji ``## Slajd N — <tytuł>`` (bez tytułu, gdy VLM go nie zwrócił)."""
+    base = f"## Slajd {slide.index}"
+    return f"{base} — {analysis.title}" if analysis.title else base
+
+
+def _slide_image(slide: Slide) -> str:
+    """Obraz slajdu ze ścieżką WZGLĘDNĄ (``slides/...``) — działa po przeniesieniu folderu."""
+    return f"![Slajd {slide.index}](slides/{slide.filename})"
+
+
+def _time_range(start_s: int, end_s: int | None) -> str:
+    """Zakres czasu okna ``HH:MM:SS-HH:MM:SS``; ostatni slajd (``end_s is None``) → „do końca"."""
+    start = _hms(start_s)
+    return f"{start} do końca" if end_s is None else f"{start}-{_hms(end_s)}"
+
+
+def _hms(seconds: float) -> str:
+    """Znacznik ``HH:MM:SS`` z sekund (ujemne → 00:00:00)."""
+    total = max(0, int(seconds))
+    return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+
+
+def _assemble_notes(meta: MaterialMetadata, sections: list[str]) -> str:
+    """Składa ``notes.md``: nagłówek materiału (tytuł, data, prowadzący) + sekcje per slajd."""
+    header = f"# {meta.title}"
+    bits: list[str] = []
+    if meta.created_at:
+        bits.append(f"Data: {meta.created_at[:10]}")
+    if meta.presenter:
+        bits.append(f"Prowadzący: {meta.presenter}")
+    if bits:
+        header += "\n" + "  ·  ".join(bits)
+    return f"{header}\n\n" + "\n".join(sections)
+
+
+def _load_slide_analyses(path: Path) -> dict[int, SlideAnalysis]:
+    """Wczytuje analizy z ``slides_analysis.json`` (wznowienie fazy 1); zepsuty/brak → pusty."""
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    result: dict[int, SlideAnalysis] = {}
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict) and isinstance(item.get("index"), int):
+                result[item["index"]] = SlideAnalysis(
+                    title=str(item.get("title", "")),
+                    text=str(item.get("text", "")),
+                    description=str(item.get("description", "")),
+                )
+    return result
+
+
+def _write_slide_analyses(path: Path, analyses: dict[int, SlideAnalysis]) -> None:
+    """Zapisuje analizy do ``slides_analysis.json`` (BEZ BOM — plik maszynowy; sort po indeksie)."""
+    payload = [
+        {"index": i, "title": a.title, "text": a.text, "description": a.description}
+        for i, a in sorted(analyses.items())
+    ]
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _persist_notes(store: RecordingStore, folder: Path, meta: MaterialMetadata) -> None:
+    """Zapis statusów notatki: metadata.json (źródło prawdy) + indeks SQLite (round-trip)."""
+    updated = replace(meta, notes_status="done", notes_path=NOTES_FILENAME)
+    write_metadata(folder, updated)
+    store.upsert_material(folder, updated)
+
+
+def enqueue_notes(
+    store: RecordingStore,
+    jobs: JobStore,
+    recording_id: int,
+    *,
+    vlm_local: str | None,
+    vlm_cloud: str | None,
+    llm_local: str | None,
+    llm_cloud: str | None,
+) -> int:
+    """Kolejkuje notatkę: odmawia bez slajdów/transkryptu, dobiera linię wg tras (VLM+LLM).
+
+    Odmowa (``ValueError``) gdy materiał nie istnieje, nie ma slajdów („najpierw podłącz slajdy")
+    albo ``transcript_status != done`` („najpierw transkrypcja"). Linia z :func:`notes_lane`
+    (GPU, gdy którakolwiek trasa lokalna). Zwraca id joba.
+    """
+    material = store.get_material(recording_id)
+    if material is None:
+        raise ValueError(f"notes: materiał {recording_id} nie istnieje")
+    _folder, meta = material
+    if not meta.slides:
+        raise ValueError("Najpierw podłącz slajdy — brak slajdów do notatki.")
+    if meta.transcript_status != "done":
+        raise ValueError("Najpierw transkrypcja — brak transkryptu do notatki.")
+    vlm_route = resolve_route(cloud_ok=meta.cloud_ok, local_model=vlm_local, cloud_model=vlm_cloud)
+    llm_route = resolve_route(cloud_ok=meta.cloud_ok, local_model=llm_local, cloud_model=llm_cloud)
+    return jobs.enqueue(
+        JOB_NOTES, recording_id=recording_id, payload={"lane": notes_lane(vlm_route, llm_route)}
     )
 
 

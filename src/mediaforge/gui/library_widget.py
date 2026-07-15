@@ -38,6 +38,7 @@ from mediaforge.core.ai.summarize import (
     summary_start_line,
 )
 from mediaforge.core.ai.transcribe import WhisperCppBackend
+from mediaforge.core.ai.vision import VisionClient, VisionConfig
 from mediaforge.core.detection import tools as detect_tools
 from mediaforge.core.engines.download_engine import DownloaderEngine, run_ytdlp_update
 from mediaforge.core.engines.import_engine import ImporterEngine
@@ -47,11 +48,14 @@ from mediaforge.core.jobs.handlers import (
     DEFAULT_ROUTES,
     JOB_DOWNLOAD,
     JOB_IMPORT,
+    JOB_NOTES,
     JOB_SUMMARIZE,
     JOB_TRANSCRIBE,
+    enqueue_notes,
     enqueue_summarize,
     make_download_handler,
     make_import_handler,
+    make_notes_handler,
     make_summarize_handler,
     make_transcribe_handler,
 )
@@ -103,6 +107,18 @@ class LibraryWidget(QWidget):
             ),
         )
         self._queue.register(
+            JOB_NOTES,
+            make_notes_handler(
+                self._store,
+                self._vision_client(),
+                self._summary_client(),
+                vlm_local=cfg_mod.get_vlm_model_local(self._config),
+                vlm_cloud=cfg_mod.get_vlm_model_cloud(self._config),
+                llm_local=cfg_mod.get_summary_model_local(self._config),
+                llm_cloud=cfg_mod.get_summary_model_cloud(self._config),
+            ),
+        )
+        self._queue.register(
             JOB_DOWNLOAD, make_download_handler(DownloaderEngine(store=self._store))
         )
         self._seen: dict[int, str] = {}
@@ -135,6 +151,21 @@ class LibraryWidget(QWidget):
             prompt_suffix=cfg_mod.get_summary_prompt_suffix(self._config),
         )
         return SummaryClient(config)
+
+    def _vision_client(self) -> VisionClient:
+        """Klient VLM (analiza slajdów) z configu — endpoint/limit + opcjonalny master key.
+
+        Timeout i sufiks współdzielone ze streszczeniami (``summary_timeout``/``prompt_suffix``);
+        model wybiera routing (``vlm_model_*``). Master key z keyring (jedyny sekret aplikacji).
+        """
+        config = VisionConfig(
+            base_url=cfg_mod.get_litellm_base_url(self._config) or "http://localhost:4000",
+            max_tokens=cfg_mod.get_vlm_max_tokens(self._config),
+            timeout=cfg_mod.get_summary_timeout(self._config),
+            api_key=secrets.get_secret(secrets.GATEWAY_MASTER_KEY),
+            prompt_suffix=cfg_mod.get_summary_prompt_suffix(self._config),
+        )
+        return VisionClient(config)
 
     # ── Cykl życia kolejki (start z okna głównego; nie w testach) ─────────────
 
@@ -238,6 +269,7 @@ class LibraryWidget(QWidget):
         self._details.save_btn.clicked.connect(self._on_save)
         self._details.transcribe_btn.clicked.connect(self._on_transcribe)
         self._details.summarize_btn.clicked.connect(self._on_summarize)
+        self._details.notes_btn.clicked.connect(self._on_notes)
         self._details.attach_slides_btn.clicked.connect(self._on_attach_slides)
         self._details.open_btn.clicked.connect(self._open_folder)
         self._details.delete_btn.clicked.connect(self._on_delete)
@@ -291,6 +323,7 @@ class LibraryWidget(QWidget):
         date = meta.created_at[:10] if meta.created_at else "—"
         badge = "  ·  📝" if meta.transcript_status == "done" else ""
         badge += "  ·  🧾" if meta.summary_status == "done" else ""
+        badge += "  ·  🗒️" if meta.notes_status == "done" else ""
         return f"{meta.title}  ·  {date}  ·  {_fmt_duration(meta.duration)}{badge}"
 
     # ── Wybór / podgląd ───────────────────────────────────────────────────────
@@ -489,6 +522,36 @@ class LibraryWidget(QWidget):
         where = "chmura" if meta.cloud_ok else "lokalnie"
         self._log.append_line(f"Streszczanie w kolejce ({where}): {meta.title}", "queued")
         self._log_summary_input(folder, meta)
+
+    def _on_notes(self) -> None:
+        """Kolejkuje notatkę per slajd (VLM + komentarz) — odmowa bez slajdów/transkryptu.
+
+        Linia (GPU/IO) dobierana w :func:`enqueue_notes` wg tras VLM/LLM (lokalna → GPU).
+        """
+        if self._current is None:
+            return
+        if not cfg_mod.get_vlm_model_local(self._config):
+            self._log.append_line(
+                "Ustaw vlm_model_local w configu (sprawdź `doctor`) — brak modelu VLM.",
+                "error",
+            )
+            return
+        rec_id, _folder, meta = self._current
+        try:
+            enqueue_notes(
+                self._store,
+                self._jobs_store,
+                rec_id,
+                vlm_local=cfg_mod.get_vlm_model_local(self._config),
+                vlm_cloud=cfg_mod.get_vlm_model_cloud(self._config),
+                llm_local=cfg_mod.get_summary_model_local(self._config),
+                llm_cloud=cfg_mod.get_summary_model_cloud(self._config),
+            )
+        except ValueError as exc:  # brak slajdów / transkryptu / materiał nie istnieje
+            self._log.append_line(f"Nie utworzono notatki «{meta.title}»: {exc}", "error")
+            return
+        where = "chmura" if meta.cloud_ok else "lokalnie"
+        self._log.append_line(f"Notatka w kolejce ({where}): {meta.title}", "queued")
 
     def _log_summary_input(self, folder: Path, meta: MaterialMetadata) -> None:
         """Loguje rozmiar wejścia streszczenia (znaki, model, timeout) do LogView.

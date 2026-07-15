@@ -35,6 +35,8 @@ def check_all(
     whisper_model: str | None = None,
     summary_model_local: str | None = None,
     summary_model_cloud: str | None = None,
+    vlm_model_local: str | None = None,
+    vlm_model_cloud: str | None = None,
     *,
     probe_whisper: bool = False,
     probe_encoders: bool = False,
@@ -90,6 +92,11 @@ def check_all(
         "summary": {
             "model_local": summary_model_local,
             "model_cloud": summary_model_cloud,
+        },
+        # Modele VLM notatek per slajd (S6) — wypis konfiguracji obok streszczeń.
+        "notes": {
+            "model_local": vlm_model_local,
+            "model_cloud": vlm_model_cloud,
         },
         "providers": tools.check_providers(),
     }
@@ -237,6 +244,12 @@ def render_report(report: dict[str, Any]) -> str:
     lines.append(
         f"             streszczenia: lokalny {summary.get('model_local') or '—'} · "
         f"chmura {summary.get('model_cloud') or '— (tylko lokalnie)'}"
+    )
+    # Notatki per slajd (S6): VLM lokalny/chmurowy (analiza obrazu slajdu przez gateway).
+    notes = report.get("notes", {})
+    lines.append(
+        f"             notatki: VLM lokalny {notes.get('model_local') or '—'} · "
+        f"chmura {notes.get('model_cloud') or '— (tylko lokalnie)'}"
     )
 
     prov = report.get("providers", {})

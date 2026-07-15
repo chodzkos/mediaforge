@@ -124,6 +124,11 @@ class MaterialDetailsPanel(QWidget):
         self.summarize_btn = QPushButton("Streść")
         self.summarize_btn.setToolTip("Streść transkrypt przez gateway (aktywne po transkrypcji)")
         actions.addWidget(self.summarize_btn)
+        self.notes_btn = QPushButton("Notatka")
+        self.notes_btn.setToolTip(
+            "Notatka per slajd (VLM + komentarz prowadzącego) — aktywne, gdy są slajdy i transkrypt"
+        )
+        actions.addWidget(self.notes_btn)
         self.attach_slides_btn = QPushButton("Podłącz slajdy")
         self.attach_slides_btn.setToolTip(
             "Skopiuj obrazy slajdów (z przeglądarki: prawy→zapisz albo rozszerzenie Image "
@@ -145,6 +150,14 @@ class MaterialDetailsPanel(QWidget):
         self._summary_view.setPlaceholderText("(brak streszczenia — użyj „Streść”)")
         self._summary_view.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         col.addWidget(self._summary_view, stretch=1)
+
+        # ── ROZCIĄGLIWA: podgląd notatki per slajd (Markdown, ten sam widget co streszczenie) ──
+        col.addWidget(QLabel("Notatka:"))
+        self._notes_view = QTextBrowser()
+        self._notes_view.setOpenExternalLinks(True)
+        self._notes_view.setPlaceholderText("(brak notatki — użyj „Notatka”)")
+        self._notes_view.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        col.addWidget(self._notes_view, stretch=1)
 
         # ── ROZCIĄGLIWA: galeria slajdów (IconMode, własny scroll wewnętrzny) ────
         # Kolejna sekcja rozciągliwa PO fixie layoutu z fix/s4-polish — panel owija
@@ -182,13 +195,17 @@ class MaterialDetailsPanel(QWidget):
         self._info.setText(
             f"Data: {meta.created_at[:19] or '—'}  ·  Długość: {_fmt_duration(meta.duration)}  ·  "
             f"Źródło: {meta.source_type}  ·  Transkrypcja: {meta.transcript_status}  ·  "
-            f"Streszczenie: {meta.summary_status}  ·  Slajdy: {len(meta.slides)}"
+            f"Streszczenie: {meta.summary_status}  ·  Notatka: {meta.notes_status}  ·  "
+            f"Slajdy: {len(meta.slides)}"
         )
         self.set_editing_enabled(True)
         # „Streść" tylko po transkrypcji (handler i tak odmówi bez transkryptu — to UX).
         self.summarize_btn.setEnabled(meta.transcript_status == "done")
+        # „Notatka" wymaga slajdów ORAZ transkryptu (handler odmówi bez któregokolwiek — to UX).
+        self.notes_btn.setEnabled(meta.transcript_status == "done" and len(meta.slides) >= 1)
         self._show_thumbnail(folder, meta)
         self._show_summary(folder, meta)
+        self._show_notes(folder, meta)
         self._show_slides(folder, meta)
 
     def clear(self) -> None:
@@ -200,6 +217,7 @@ class MaterialDetailsPanel(QWidget):
         self._info.clear()
         self._thumb.setText("(brak podglądu)")
         self._summary_view.clear()
+        self._notes_view.clear()
         self._slides_gallery.clear()
         self.set_editing_enabled(False)
 
@@ -215,6 +233,7 @@ class MaterialDetailsPanel(QWidget):
             self.save_btn,
             self.transcribe_btn,
             self.summarize_btn,
+            self.notes_btn,
             self.attach_slides_btn,
             self.open_btn,
             self.delete_btn,
@@ -260,6 +279,23 @@ class MaterialDetailsPanel(QWidget):
             except OSError:
                 pass
         self._summary_view.clear()
+
+    def _show_notes(self, folder: Path, meta: MaterialMetadata) -> None:
+        """Renderuje notes.md (źródło prawdy) jako Markdown; brak pliku → czyści podgląd.
+
+        Ten sam widget/odczyt co streszczenie: ``utf-8-sig`` (notes.md ma BOM dla czytników
+        zewnętrznych — tu strippowany). Obrazy slajdów są ścieżkami względnymi (``slides/...``);
+        QTextBrowser rozwiązuje je względem folderu materiału (patrz ``setSearchPaths``).
+        """
+        if meta.notes_path:
+            path = folder / meta.notes_path
+            try:
+                self._notes_view.setSearchPaths([str(folder)])  # obrazy slajdów: ścieżki względne
+                self._notes_view.setMarkdown(path.read_text(encoding="utf-8-sig"))
+                return
+            except OSError:
+                pass
+        self._notes_view.clear()
 
     def _show_slides(self, folder: Path, meta: MaterialMetadata) -> None:
         """Renderuje galerię miniatur z ``slides/``; timestamp (m:ss) jako podpis, gdy jest."""

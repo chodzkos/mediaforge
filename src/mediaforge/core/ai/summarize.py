@@ -1,4 +1,4 @@
-"""Klient streszczeń przez gateway LiteLLM (Qt-free, transport ``urllib`` ze stdlib).
+"""Klient streszczeń przez gateway LiteLLM (Qt-free).
 
 TWARDA GRANICA: aplikacja rozmawia WYŁĄCZNIE z gatewayem LiteLLM (jedno
 OpenAI-kompatybilne API). ZERO SDK dostawców, ZERO kluczy API dostawców w aplikacji —
@@ -9,37 +9,44 @@ Podział odpowiedzialności (obie funkcje są czyste i testowalne bez sieci):
 
 * :func:`build_summary_request` — składa payload chat-completions (model z :class:`ModelRoute`);
 * :func:`parse_summary_response` — wyciąga treść albo rzuca :class:`GatewayError`
-  (błąd gatewaya / śmieci / pusta treść).
+  (błąd gatewaya / śmieci / pusta treść). To alias wspólnego ekstraktora z :mod:`core.ai.gateway`.
 
-Transport (:meth:`SummaryClient.summarize`) używa ``urllib.request`` ze stdlib i rozdziela dwa
-powody błędu na osobne komunikaty :class:`GatewayError`: **timeout** (gateway wolno liczy długi
-materiał → „zwiększ summary_timeout") vs **błąd połączenia** (gatewaya nie ma → „niedostępny").
-Mylenie ich sugerowało padnięty gateway, gdy ten tylko ciężko liczył.
+Rdzeń transportu (POST, podział błędów **timeout** vs **połączenie**, parsowanie JSON, detekcja
+ucięcia) jest wydzielony do :mod:`core.ai.gateway` — współdzielony z klientem VLM
+(:mod:`core.ai.vision`). Tu zostaje logika specyficzna dla streszczeń: prompty, map-reduce,
+:class:`SummaryClient`.
 """
 
 from __future__ import annotations
 
 import json
-import urllib.error
-import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from mediaforge.core.ai.chunking import Chunk, split_segments
+from mediaforge.core.ai.gateway import (
+    GatewayError,
+    Transport,
+    default_transport,
+    is_truncated,
+    parse_chat_content,
+    post_chat,
+)
 from mediaforge.core.ai.routing import ModelRoute
 from mediaforge.core.ai.transcribe import Segment, parse_whisper_json
 
-# Transport wstrzykiwalny (seam do testów bez sieci): URL + body + nagłówki + timeout → bajty.
-Transport = Callable[[str, bytes, Mapping[str, str], float], bytes]
-
-_CHAT_PATH = "/v1/chat/completions"
-
-
-class GatewayError(Exception):
-    """Gateway niedostępny lub zwrócił nieużyteczną odpowiedź (czytelny komunikat do jobs)."""
-
+# Re-eksport rdzenia transportu (wydzielony do :mod:`core.ai.gateway`): stabilne API dla
+# handlerów i testów, które importują te nazwy z ``summarize``. ``parse_summary_response`` to
+# ekstraktor treści chat-completions — dla streszczeń zachowana dotychczasowa nazwa.
+parse_summary_response = parse_chat_content
+__all__ = [
+    "GatewayError",
+    "Transport",
+    "is_truncated",
+    "parse_summary_response",
+]
 
 # Adnotacja doklejana przy prawdopodobnym ucięciu treści (limit summary_max_tokens osiągnięty).
 # Ucięte streszczenie jest wciąż użyteczne — NIE wywalamy joba, tylko oznaczamy je w pliku.
@@ -77,11 +84,6 @@ class SummaryConfig:
     prompt_suffix: str = "/no_think"
 
 
-def _endpoint(base_url: str) -> str:
-    """URL chat-completions gatewaya, odporny na trailing slash w ``base_url``."""
-    return f"{base_url.rstrip('/')}{_CHAT_PATH}"
-
-
 def _system_prompt(language: str, suffix: str = "") -> str:
     """Instrukcja systemowa: rzeczowe streszczenie w zadanym języku, w Markdown.
 
@@ -112,58 +114,6 @@ def build_summary_request(
         ],
         "max_tokens": config.max_tokens if max_tokens is None else max_tokens,
     }
-
-
-def parse_summary_response(data: Any, *, max_tokens: int | None = None) -> str:
-    """Wyciąga treść streszczenia z odpowiedzi gatewaya albo rzuca :class:`GatewayError`.
-
-    Obsługiwane przypadki błędne: odpowiedź z polem ``error`` (gateway zgłosił problem),
-    śmieci/niepoprawny kształt (brak ``choices``/``message``) oraz pusta treść.
-
-    Diagnostyka pustej treści (potrzebuje pełnej odpowiedzi, nie tylko ``choices``): gdy
-    ``content`` jest pusty ORAZ ``usage.completion_tokens >= max_tokens`` (budżet wyczerpany),
-    rzucamy komunikat o modelu rozumującym (qwen3 zjadł limit na rozumowanie zanim zaczął
-    treść — reasoning_content, nie content). **Nie** opieramy się na ``finish_reason``: przy
-    tym ucięciu raportuje ``stop`` mimo osiągnięcia limitu (zmierzone na żywo).
-    """
-    if not isinstance(data, Mapping):
-        raise GatewayError(f"Gateway zwrócił nieoczekiwany kształt: {type(data).__name__}")
-    if "error" in data:
-        raise GatewayError(f"Gateway zgłosił błąd: {data['error']}")
-    choices = data.get("choices")
-    if not isinstance(choices, list) or not choices:
-        raise GatewayError("Gateway nie zwrócił żadnej odpowiedzi (brak 'choices').")
-    message = choices[0].get("message") if isinstance(choices[0], Mapping) else None
-    content = message.get("content") if isinstance(message, Mapping) else None
-    if not isinstance(content, str) or not content.strip():
-        if max_tokens is not None and _budget_exhausted(data, max_tokens):
-            raise GatewayError(
-                f"Model zużył cały limit tokenów ({max_tokens}) na rozumowanie zanim zaczął "
-                "streszczenie — zwiększ summary_max_tokens albo zostaw summary_prompt_suffix"
-                "=/no_think."
-            )
-        raise GatewayError("Gateway zwrócił pustą treść streszczenia.")
-    return content.strip()
-
-
-def _budget_exhausted(data: Mapping[str, Any], max_tokens: int) -> bool:
-    """Czy ``usage.completion_tokens`` osiągnął/przekroczył budżet (limit tokenów wyczerpany)."""
-    usage = data.get("usage")
-    if not isinstance(usage, Mapping):
-        return False
-    completion = usage.get("completion_tokens")
-    return isinstance(completion, int) and completion >= max_tokens
-
-
-def is_truncated(data: Any, max_tokens: int) -> bool:
-    """Czy NIEpusta treść jest prawdopodobnie ucięta (osiągnięto limit ``max_tokens``).
-
-    Jedyny wiarygodny sygnał to ``usage.completion_tokens >= max_tokens`` — ``finish_reason``
-    przy tym ucięciu raportuje ``stop`` (zmierzone na żywo), więc na nim NIE polegamy. Wołane
-    dopiero po :func:`parse_summary_response` (treść już niepusta), więc równość budżetu = ucięcie
-    w trakcie pisania treści (nie: cały budżet zjedzony na rozumowanie — to odrzuca parser wyżej).
-    """
-    return isinstance(data, Mapping) and _budget_exhausted(data, max_tokens)
 
 
 def read_transcript_text(transcript_json: Path) -> str:
@@ -306,18 +256,6 @@ def reduce_parts(
     return call(reduce_prompt(body)), calls + 1
 
 
-def _is_timeout(exc: BaseException) -> bool:
-    """Czy błąd transportu to timeout (a nie zerwane/odrzucone połączenie).
-
-    ``socket.timeout`` jest aliasem ``TimeoutError`` (3.11+), więc timeout wystawia się albo
-    bezpośrednio, albo opakowany w ``urllib.error.URLError`` (wtedy w ``reason``). Rozpoznajemy
-    oba, by oddzielić „gateway wolno liczy" od „gatewaya nie ma" (connection refused).
-    """
-    if isinstance(exc, TimeoutError):
-        return True
-    return isinstance(getattr(exc, "reason", None), TimeoutError)
-
-
 def summary_start_line(
     char_count: int, model: str, timeout: float, *, chunks: int | None = None
 ) -> str:
@@ -339,57 +277,28 @@ def summary_start_line(
     )
 
 
-def _default_transport(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> bytes:
-    """Domyślny transport POST przez ``urllib.request`` (stdlib, bez zewnętrznych SDK)."""
-    request = urllib.request.Request(url, data=body, headers=dict(headers), method="POST")
-    with urllib.request.urlopen(request, timeout=timeout) as resp:
-        raw = resp.read()
-    return bytes(raw)
-
-
 @dataclass(slots=True)
 class SummaryClient:
     """Klient gatewaya: transkrypt + trasa → streszczenie (Markdown). Transport wstrzykiwalny."""
 
     config: SummaryConfig
-    transport: Transport = field(default=_default_transport)
-
-    def _headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json"}
-        if self.config.api_key:
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
-        return headers
+    transport: Transport = field(default=default_transport)
 
     def _post(self, user_content: str, route: ModelRoute, *, max_tokens: int | None = None) -> Any:
-        """POST wiadomości usera; zwrot sparsowanego JSON-a albo :class:`GatewayError`.
+        """POST wiadomości usera przez wspólny rdzeń :func:`~core.ai.gateway.post_chat`.
 
         Wspólny rdzeń ścieżki pojedynczej (:meth:`summarize`) i map-reduce (:meth:`run`).
         ``max_tokens`` (gdy podany) nadpisuje budżet wyjścia z configu — faza reduce ma osobny.
-        Rozdzielamy dwa powody błędu transportu, bo prowadzą do różnych działań użytkownika:
-        **timeout** (gateway ciężko liczy długi materiał) → komunikat o limicie czasu z podpowiedzią
-        „zwiększ summary_timeout"; **błąd połączenia** (gateway nie wstał / zły endpoint) →
-        komunikat NAZYWAJĄCY gateway (``Gateway niedostępny``). Mylenie ich sugerowało padnięty
-        gateway, gdy ten tylko wolno liczył.
+        Podział błędów transportu (timeout vs połączenie) i parsowanie JSON są w ``post_chat``.
         """
         payload = build_summary_request(user_content, route, self.config, max_tokens=max_tokens)
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        url = _endpoint(self.config.base_url)
-        try:
-            raw = self.transport(url, body, self._headers(), self.config.timeout)
-        except (urllib.error.URLError, OSError, TimeoutError) as exc:
-            if _is_timeout(exc):
-                raise GatewayError(
-                    f"Streszczanie przekroczyło limit czasu ({int(self.config.timeout)} s) — długi "
-                    "materiał na lokalnym modelu może potrzebować kilku minut; zwiększ "
-                    "summary_timeout."
-                ) from exc
-            raise GatewayError(f"Gateway niedostępny ({self.config.base_url}): {exc}") from exc
-        try:
-            return json.loads(raw)
-        except (ValueError, TypeError) as exc:
-            raise GatewayError(
-                f"Gateway zwrócił niepoprawny JSON ({self.config.base_url}): {exc}"
-            ) from exc
+        return post_chat(
+            payload,
+            base_url=self.config.base_url,
+            transport=self.transport,
+            api_key=self.config.api_key,
+            timeout=self.config.timeout,
+        )
 
     def summarize(self, text: str, route: ModelRoute) -> str:
         """POST transkryptu i zwrot treści — ścieżka POJEDYNCZA (jeden request, bez reduce).

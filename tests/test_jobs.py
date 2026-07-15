@@ -123,25 +123,33 @@ def test_gpu_lane_serializes_same_type(tmp_path: Path) -> None:
 
 
 def test_gpu_lane_serializes_across_types(tmp_path: Path) -> None:
-    """KLUCZOWE: różne typy GPU na wspólnej linii ``gpu`` też się serializują (VLM vs transkrypcja).
+    """KLUCZOWE: różne typy GPU na linii ``gpu`` serializują się (VLM/notatki vs transkrypcja).
 
-    Tu jest sens współdzielonej linii: transkrypcja i przyszły VLM/LLM nie ładują dwóch modeli
-    do VRAM naraz. Gdyby każdy typ miał własny executor, ten test by padł (max == 2).
+    Tu jest sens współdzielonej linii: transkrypcja, VLM i notatki (JOB_NOTES) nie ładują dwóch
+    modeli do VRAM naraz. Gdyby każdy typ miał własny executor, ten test by padł (max == 2).
     """
     store = _store(tmp_path)
     lock = threading.Lock()
     active = {"now": 0, "max": 0}
     handler = _vram_guard_handler(lock, active)
-    queue = JobQueue(store, workers=4, lanes={"gpu": 1}, routes={"transcribe": "gpu", "vlm": "gpu"})
+    queue = JobQueue(
+        store,
+        workers=4,
+        lanes={"gpu": 1},
+        routes={"transcribe": "gpu", "vlm": "gpu", "notes": "gpu"},
+    )
     queue.register("transcribe", handler)
     queue.register("vlm", handler)
+    queue.register("notes", handler)
     store.enqueue("transcribe")
     store.enqueue("vlm")
+    store.enqueue("notes")
     store.enqueue("transcribe")
     store.enqueue("vlm")
+    store.enqueue("notes")
 
-    assert queue.process_pending() == 4
-    assert active["max"] == 1  # nigdy dwa modele GPU naraz, NIEZALEŻNIE od typu
+    assert queue.process_pending() == 6
+    assert active["max"] == 1  # nigdy dwa modele GPU naraz, NIEZALEŻNIE od typu (w tym JOB_NOTES)
 
 
 def test_default_routes_serialize_transcribe_and_summarize_on_gpu(tmp_path: Path) -> None:
