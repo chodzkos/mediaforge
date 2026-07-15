@@ -187,6 +187,47 @@ def _clean_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(cfg_mod, "load", lambda: clean)
 
 
+def _config_with(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **keys: object) -> None:
+    """``cfg_mod.load`` → Config z podanymi kluczami ustawionymi (reszta domyślna)."""
+    cfg = Config(cfg_mod.APP_NAME, path=tmp_path / "preset_config.json")
+    for key, value in keys.items():
+        cfg[key] = value
+    monkeypatch.setattr(cfg_mod, "load", lambda: cfg)
+
+
+def test_vlm_suffix_independent_of_summary_suffix(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Footgun #76 zamknięty: ``summary_prompt_suffix=""`` (streszczenia bez ``/no_think``) NIE
+    kasuje ``/no_think`` VLM. Osobne klucze — VLM (qwen3-vl) dostaje własny default niezależnie."""
+    _isolate(monkeypatch, tmp_path)
+    _config_with(
+        monkeypatch,
+        tmp_path,
+        summary_prompt_suffix="",  # streszczenia modelem nie-rozumującym → jawnie bez sufiksu
+        # vlm_prompt_suffix celowo NIEustawiony → VLM od własnego defaultu /no_think
+    )
+    widget = LibraryWidget()
+    qtbot.addWidget(widget)
+
+    summary_cap: dict[str, object] = {}
+    summary = widget._summary_client()
+    summary.transport = _capturing_transport(summary_cap, "Streszczenie.")
+    summary.summarize("Transkrypt.", ModelRoute(RouteKind.LOCAL, "ollama/qwen3:27b"))
+
+    vlm_cap: dict[str, object] = {}
+    vlm = widget._vision_client()
+    vlm.transport = _capturing_transport(vlm_cap, "TYTUŁ:\nA")
+    img = tmp_path / "slajd.png"
+    img.write_bytes(b"\x89PNG\r\n")
+    vlm.analyze_slide(img, ModelRoute(RouteKind.LOCAL, "ollama/qwen-vl-local"))
+
+    summary_payload, vlm_payload = summary_cap["payload"], vlm_cap["payload"]
+    assert isinstance(summary_payload, dict) and isinstance(vlm_payload, dict)
+    assert "/no_think" not in summary_payload["messages"][0]["content"]  # streszczenia: wyłączony
+    assert vlm_payload["messages"][0]["content"].endswith("/no_think")  # VLM: nietknięty
+
+
 def _capturing_transport(captured: dict[str, object], content: str) -> Transport:
     """Atrapa transportu: zapamiętuje payload żądania, zwraca minimalną poprawną odpowiedź."""
 
@@ -217,6 +258,27 @@ def test_notes_vlm_payload_carries_no_think_on_clean_config(
     assert isinstance(payload, dict)
     assert payload["messages"][0]["content"].endswith("/no_think")  # sufiks NIE skasowany
     assert payload["max_tokens"] == 2048  # domyślny budżet VLM (default dataclassy)
+
+
+def test_vlm_prompt_suffix_override_reaches_payload(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nowy klucz ``vlm_prompt_suffix`` (nie-None) faktycznie steruje payloadem VLM (wiring)."""
+    _isolate(monkeypatch, tmp_path)
+    _config_with(monkeypatch, tmp_path, vlm_prompt_suffix="/custom_vlm")
+    widget = LibraryWidget()
+    qtbot.addWidget(widget)
+
+    captured: dict[str, object] = {}
+    client = widget._vision_client()
+    client.transport = _capturing_transport(captured, "TYTUŁ:\nA")
+    img = tmp_path / "slajd.png"
+    img.write_bytes(b"\x89PNG\r\n")
+    client.analyze_slide(img, ModelRoute(RouteKind.LOCAL, "ollama/qwen-vl-local"))
+
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["messages"][0]["content"].endswith("/custom_vlm")  # override z nowego klucza
 
 
 def test_summary_payload_carries_no_think_on_clean_config(

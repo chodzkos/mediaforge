@@ -189,10 +189,11 @@ class LibraryWidget(QWidget):
             timeout=cfg_mod.get_summary_timeout(self._config),
             api_key=secrets.get_secret(secrets.GATEWAY_MASTER_KEY),
         )
-        # Jak w streszczeniu: sufiks (``/no_think`` — dla qwen3-vl KONIECZNY) nadpisuje default
-        # dataclassy TYLKO gdy ustawiony (nie-None); None → zostaje default. Bez tego None z
-        # configu skasowałby ``/no_think`` i VLM zjadałby cały budżet na rozumowanie (pusta treść).
-        suffix = cfg_mod.get_summary_prompt_suffix(self._config)
+        # Jak w streszczeniu, ale WŁASNY klucz VLM: sufiks (``/no_think`` — dla qwen3-vl KONIECZNY)
+        # nadpisuje default dataclassy TYLKO gdy ustawiony (nie-None); None → zostaje default. Bez
+        # tego None skasowałby ``/no_think`` i VLM zjadałby budżet na rozumowanie (pusta treść).
+        # Osobny klucz: czyszczenie sufiksu streszczeń nie skasuje ``/no_think`` VLM (footgun #76).
+        suffix = cfg_mod.get_vlm_prompt_suffix(self._config)
         if suffix is not None:
             config.prompt_suffix = suffix
         return VisionClient(config)

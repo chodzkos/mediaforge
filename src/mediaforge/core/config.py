@@ -57,6 +57,7 @@ _SUMMARY_REDUCE_MAX_TOKENS_KEY = "summary_reduce_max_tokens"  # osobny budżet w
 _VLM_MODEL_LOCAL_KEY = "vlm_model_local"  # model VLM lokalny (np. ollama/qwen-vl-local)
 _VLM_MODEL_CLOUD_KEY = "vlm_model_cloud"  # model VLM chmurowy (None = brak trasy chmurowej)
 _VLM_MAX_TOKENS_KEY = "vlm_max_tokens"  # limit tokenów odpowiedzi VLM (gęste slajdy → 2048)
+_VLM_PROMPT_SUFFIX_KEY = "vlm_prompt_suffix"  # sufiks system-promptu VLM (qwen3-vl: /no_think)
 
 # ~8k tokenów promptu — komfortowo w oknie 32k z miejscem na wyjście; powyżej tego progu
 # streszczenie idzie ścieżką map-reduce (kawałki po granicach segmentów), poniżej: jeden request.
@@ -240,15 +241,29 @@ def set_summary_max_tokens(cfg: Config, tokens: int | None) -> None:
 
 
 def get_summary_prompt_suffix(cfg: Config) -> str | None:
-    """Sufiks system-promptu (soft-switch qwen3: ``/no_think``); brak klucza → ``None`` = default.
+    """Sufiks system-promptu STRESZCZEŃ (soft-switch qwen3: ``/no_think``); brak klucza → ``None``.
 
     Zwraca ``None``, gdy klucz NIEustawiony — sygnał „użyj domyślnego z kodu" (default żyje w
-    JEDNYM miejscu: polu dataclassy ``SummaryConfig``/``VisionConfig``, nie zdublowany tutaj).
-    Reguła projektu: ``None`` w configu = default z kodu, więc wołający przekazuje sufiks do
-    configu klienta TYLKO gdy nie-``None``. Pusty łańcuch (``""``) jest odrębny od braku klucza —
-    to JAWNE wyłączenie sufiksu (respektowane), nie „użyj domyślnego".
+    JEDNYM miejscu: polu dataclassy ``SummaryConfig``, nie zdublowany tutaj). Reguła projektu:
+    ``None`` w configu = default z kodu, więc wołający przekazuje sufiks do configu klienta TYLKO
+    gdy nie-``None``. Pusty łańcuch (``""``) jest odrębny od braku klucza — to JAWNE wyłączenie
+    sufiksu (respektowane), nie „użyj domyślnego". Tor VLM ma WŁASNY klucz
+    (:func:`get_vlm_prompt_suffix`) — wyczyszczenie sufiksu streszczeń NIE dotyka VLM.
     """
     value = cfg.get(_SUMMARY_PROMPT_SUFFIX_KEY)
+    return value if isinstance(value, str) else None
+
+
+def get_vlm_prompt_suffix(cfg: Config) -> str | None:
+    """Sufiks system-promptu VLM (soft-switch qwen3-vl: ``/no_think``); brak klucza → ``None``.
+
+    Osobny od sufiksu streszczeń (:func:`get_summary_prompt_suffix`) — modele bywają różne na
+    obu torach (streszczenia mogą iść modelem nierozumującym, gdy VLM to nadal qwen3-vl, który
+    ``/no_think`` KONIECZNIE potrzebuje). Ta sama semantyka co tam: ``None`` (brak klucza) =
+    „użyj domyślnego z kodu" (default żyje w polu dataclassy ``VisionConfig``); wołający przekazuje
+    do configu klienta TYLKO gdy nie-``None``; ``""`` = JAWNE wyłączenie (respektowane).
+    """
+    value = cfg.get(_VLM_PROMPT_SUFFIX_KEY)
     return value if isinstance(value, str) else None
 
 
