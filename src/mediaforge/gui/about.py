@@ -6,12 +6,26 @@ Treść składana helperami ``help_html`` (kolory przez ``palette(...)``, zero h
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
 from chodzkos_gui_kit.qt.widgets import HelpWindow, paragraph, section
 from PySide6.QtWidgets import QWidget
 
-from mediaforge import __version__
-
 ABOUT_TITLE = "O programie — mediaforge"
+
+
+def _version() -> str:
+    """Wersja z metadanych zainstalowanego pakietu (jedno źródło prawdy — pyproject).
+
+    Praca z drzewa źródeł bez instalacji → ``0.0.0+unknown`` (jak w gui-kit); nie sięgamy po
+    literał w kodzie (koniec rozjazdu ``__version__`` vs pyproject).
+    """
+    try:
+        return _pkg_version("mediaforge")
+    except PackageNotFoundError:
+        return "0.0.0+unknown"
+
 
 # Komunikat wymagany przez LEGAL_BOUNDARIES.md (UI/README).
 _LEGAL_NOTICE = (
@@ -25,10 +39,14 @@ def about_tabs() -> list[tuple[str, str]]:
     """Zakładki okna „O programie" jako ``(tytuł, html)``."""
     about = section(
         "mediaforge",
-        paragraph(f"Wersja {__version__}")
+        paragraph(f"Wersja {_version()}")
         + paragraph(
             "Desktopowy archiwizator materiałów edukacyjnych z transkrypcją i "
             "streszczeniami AI (Windows)."
+        )
+        + paragraph(
+            "Stack: PySide6 (GUI) · FFmpeg (nagrywanie/konwersja) · whisper.cpp "
+            "(transkrypcja) · Ollama + LiteLLM (streszczenia i analiza slajdów lokalnie)."
         )
         + paragraph("Licencja: MIT")
         + paragraph(

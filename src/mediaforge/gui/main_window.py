@@ -18,7 +18,7 @@ from chodzkos_gui_kit.config import Config
 from chodzkos_gui_kit.qt.theme import ThemeManager, ThemeSetting, current_palette
 from chodzkos_gui_kit.qt.widgets import LogView
 from PySide6.QtCore import QByteArray, QObject, QRunnable, QThreadPool, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -32,6 +32,7 @@ from mediaforge import __version__
 from mediaforge.core import config as cfg_mod
 from mediaforge.core import detection
 from mediaforge.gui.about import open_about
+from mediaforge.gui.help_window import open_help
 from mediaforge.gui.library_widget import LibraryWidget
 from mediaforge.gui.record_dialog import RecordDialog
 
@@ -109,6 +110,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
+        self._build_menu()
         root.addLayout(self._build_topbar())
 
         self._library = LibraryWidget()
@@ -151,13 +153,22 @@ class MainWindow(QMainWindow):
         self._sync_theme_button()
         bar.addWidget(self._theme_button)
 
-        about = QToolButton()
-        about.setText("O programie")
-        about.setToolTip("Informacje o programie i granice prawne")
-        about.clicked.connect(lambda: open_about(self))
-        bar.addWidget(about)
-
         return bar
+
+    def _build_menu(self) -> None:
+        """Menu „Pomoc": Pomoc (F1) → okno pomocy z zakładkami; O programie → dialog kitowy."""
+        help_menu = self.menuBar().addMenu("&Pomoc")
+
+        help_action = QAction("&Pomoc", self)
+        help_action.setShortcut(QKeySequence.StandardKey.HelpContents)  # F1
+        help_action.triggered.connect(lambda: open_help(self))
+        help_menu.addAction(help_action)
+
+        help_menu.addSeparator()
+
+        about_action = QAction("&O programie", self)
+        about_action.triggered.connect(lambda: open_about(self))
+        help_menu.addAction(about_action)
 
     # ── Nagrywanie ──────────────────────────────────────────────────────────--
 
