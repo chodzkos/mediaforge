@@ -6,6 +6,13 @@ projekt stosuje [Semantic Versioning](https://semver.org/lang/pl/).
 
 ## [Unreleased]
 
+### Added
+- **Pomoc w aplikacji (F1) + runbook infrastruktury + „O programie".** Cała wiedza operacyjna (instalacja LiteLLM/Ollama/whisper.cpp, pułapki wersji FFmpeg, VB-Cable) trafia z rozmów do repo — koniec szukania w historii czatu przy każdym restarcie infrastruktury.
+  - **`docs/INFRASTRUKTURA.md`** — runbook: FFmpeg (Pascal → 7.x release, nie 8.x/git), Ollama (pułapka WSL/systemd, modele), LiteLLM (instalacja z Pillow, config, start), whisper.cpp (klucze configu + build CUDA), VB-Cable, cookies Firefox, konfiguracja przez obiekt, szybka diagnoza.
+  - **Menu „Pomoc" → „Pomoc" (F1)** — kitowy `HelpWindow` z zakładkami: Szybki start, Wymagania i instalacja, Nagrywanie, Transkrypcja, Streszczenia (cloud_ok), Slajdy i notatki, Pobieranie i podcasty, Rozwiązywanie problemów. Sekcja „Wymagania i instalacja" renderowana **wprost z `docs/INFRASTRUKTURA.md`** (`HelpWindow.add_markdown_section`) — **jeden plik prawdy**, zero drugiej kopii treści w kodzie. Runbook dołączony do wheela jako package-data (`force-include`) i czytany przez `importlib.resources` (w dev fallback na repo `docs/`).
+  - **Menu „Pomoc" → „O programie"** — nazwa, wersja z **`importlib.metadata`** (jedno źródło prawdy, koniec rozjazdu z pyproject), opis, stack (PySide6/FFmpeg/whisper.cpp/Ollama/LiteLLM), licencja, link do repo, granice prawne. Przycisk „O programie" przeniesiony z górnego paska do menu.
+- **Rozszerzenie `chodzkos-gui-kit` (v0.5.3, osobny PR do kitu):** `HelpWindow.add_markdown_section(title, source: str | Path)` + `add_html_section` — render Markdown przez `QTextBrowser.setMarkdown` (zero nowych zależności), treść z pliku lub pamięci, re-render na zmianę motywu. Umożliwia „jeden plik prawdy" bez lokalnego obejścia kitu (drugi konsument obok pdf2md).
+
 ### Changed
 - **Przewijalny panel szczegółów przez `make_scrollable` z `chodzkos-gui-kit` 0.5.2.**
   `MaterialDetailsPanel` przestaje dziedziczyć po `QScrollArea` — jest teraz czystą

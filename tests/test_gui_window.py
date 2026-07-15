@@ -44,6 +44,22 @@ def _make_window(
     return window
 
 
+def test_help_menu_has_help_f1_and_about(
+    qtbot: QtBot, qapp: QApplication, cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Menu „Pomoc" ma akcję Pomoc (skrót F1) i „O programie"."""
+    from PySide6.QtGui import QKeySequence
+    from PySide6.QtWidgets import QMenu
+
+    window = _make_window(qtbot, qapp, cfg, monkeypatch)
+    menus = {m.title(): m for m in window.menuBar().findChildren(QMenu)}
+    assert "&Pomoc" in menus
+    actions = {a.text(): a for a in menus["&Pomoc"].actions() if a.text()}
+    assert "&Pomoc" in actions and "&O programie" in actions
+    # Pomoc pod F1 (StandardKey.HelpContents mapuje się na F1).
+    assert actions["&Pomoc"].shortcut() == QKeySequence(QKeySequence.StandardKey.HelpContents)
+
+
 def test_window_starts_with_status_and_log(
     qtbot: QtBot, qapp: QApplication, cfg: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
