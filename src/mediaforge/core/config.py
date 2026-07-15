@@ -239,14 +239,17 @@ def set_summary_max_tokens(cfg: Config, tokens: int | None) -> None:
     cfg[_SUMMARY_MAX_TOKENS_KEY] = tokens
 
 
-def get_summary_prompt_suffix(cfg: Config) -> str:
-    """Sufiks system-promptu streszczenia (domyślnie ``/no_think`` — soft-switch qwen3).
+def get_summary_prompt_suffix(cfg: Config) -> str | None:
+    """Sufiks system-promptu (soft-switch qwen3: ``/no_think``); brak klucza → ``None`` = default.
 
-    Konfigurowalny, by przy zmianie modelu dało się wyczyścić (``""``) bez zmiany kodu.
-    Pusty łańcuch jest respektowany (jawne wyłączenie); brak klucza = domyślny ``/no_think``.
+    Zwraca ``None``, gdy klucz NIEustawiony — sygnał „użyj domyślnego z kodu" (default żyje w
+    JEDNYM miejscu: polu dataclassy ``SummaryConfig``/``VisionConfig``, nie zdublowany tutaj).
+    Reguła projektu: ``None`` w configu = default z kodu, więc wołający przekazuje sufiks do
+    configu klienta TYLKO gdy nie-``None``. Pusty łańcuch (``""``) jest odrębny od braku klucza —
+    to JAWNE wyłączenie sufiksu (respektowane), nie „użyj domyślnego".
     """
     value = cfg.get(_SUMMARY_PROMPT_SUFFIX_KEY)
-    return value if isinstance(value, str) else "/no_think"
+    return value if isinstance(value, str) else None
 
 
 def get_summary_timeout(cfg: Config) -> float:

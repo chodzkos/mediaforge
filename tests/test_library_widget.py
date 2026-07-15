@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+from chodzkos_gui_kit.config import Config
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 
 from mediaforge.core import config as cfg_mod
+from mediaforge.core.ai.gateway import Transport
+from mediaforge.core.ai.routing import ModelRoute, RouteKind
 from mediaforge.core.jobs import JobStore
 from mediaforge.core.jobs.handlers import JOB_TRANSCRIBE
 from mediaforge.core.library.db import Database
@@ -165,6 +170,73 @@ def test_library_widget_refusals_avoid_w_configu() -> None:
     """Strażnik: żadna odmowa w library_widget nie odsyła „w configu" (user idzie do Ustawień)."""
     src = Path(library_widget_mod.__file__).read_text(encoding="utf-8")
     assert "w configu" not in src
+
+
+# ── Szczelina config→klient: /no_think przeżywa CZYSTY config (None ≠ skasowany sufiks) ─────
+#
+# Buildery (build_vision_request/build_summary_request) mają własne testy z ręcznym Config.
+# Te testy pilnują WIRINGU (_vision_client/_summary_client czyta config aplikacji) — gdyby
+# None z configu trafił WPROST do *Config, nadpisałby default dataclassy i qwen3(-vl) zjadałby
+# cały budżet na rozumowanie (pusta treść → „Model zużył cały limit tokenów"). Atrapy builderowe
+# tej szczeliny NIE łapią, bo nie czytają configu aplikacji.
+
+
+def _clean_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``cfg_mod.load`` → świeży Config bez żadnych kluczy (same domyślne = getter zwraca None)."""
+    clean = Config(cfg_mod.APP_NAME, path=tmp_path / "clean_config.json")
+    monkeypatch.setattr(cfg_mod, "load", lambda: clean)
+
+
+def _capturing_transport(captured: dict[str, object], content: str) -> Transport:
+    """Atrapa transportu: zapamiętuje payload żądania, zwraca minimalną poprawną odpowiedź."""
+
+    def transport(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> bytes:
+        captured["payload"] = json.loads(body)
+        return json.dumps({"choices": [{"message": {"content": content}}]}).encode("utf-8")
+
+    return transport
+
+
+def test_notes_vlm_payload_carries_no_think_on_clean_config(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Przy CZYSTYM configu payload VLM (z ``_vision_client``) niesie ``/no_think`` + 2048."""
+    _isolate(monkeypatch, tmp_path)
+    _clean_config(monkeypatch, tmp_path)
+    widget = LibraryWidget()
+    qtbot.addWidget(widget)
+
+    captured: dict[str, object] = {}
+    client = widget._vision_client()
+    client.transport = _capturing_transport(captured, "TYTUŁ:\nA")
+    img = tmp_path / "slajd.png"
+    img.write_bytes(b"\x89PNG\r\n")
+    client.analyze_slide(img, ModelRoute(RouteKind.LOCAL, "ollama/qwen-vl-local"))
+
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["messages"][0]["content"].endswith("/no_think")  # sufiks NIE skasowany
+    assert payload["max_tokens"] == 2048  # domyślny budżet VLM (default dataclassy)
+
+
+def test_summary_payload_carries_no_think_on_clean_config(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ta sama szczelina dla streszczeń: ``_summary_client`` niesie ``/no_think`` + 4096."""
+    _isolate(monkeypatch, tmp_path)
+    _clean_config(monkeypatch, tmp_path)
+    widget = LibraryWidget()
+    qtbot.addWidget(widget)
+
+    captured: dict[str, object] = {}
+    client = widget._summary_client()
+    client.transport = _capturing_transport(captured, "Streszczenie.")
+    client.summarize("Transkrypt.", ModelRoute(RouteKind.LOCAL, "ollama/qwen3:27b"))
+
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["messages"][0]["content"].endswith("/no_think")  # sufiks NIE skasowany
+    assert payload["max_tokens"] == 4096  # domyślny budżet streszczenia (default dataclassy)
 
 
 def test_attach_slides_button_copies_and_shows_gallery(
