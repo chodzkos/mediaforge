@@ -67,6 +67,12 @@ DEFAULT_SUMMARY_CHUNK_CHARS = 24_000
 # pozwala go użyć — wspólny cap z map-ami (4096) ucinał finalne streszczenie.
 DEFAULT_SUMMARY_REDUCE_MAX_TOKENS = 8192
 
+# Pozostałe domyślne (jedno źródło prawdy: getter + placeholder w dialogu Ustawień).
+DEFAULT_SUMMARY_MAX_TOKENS = 4096
+DEFAULT_SUMMARY_TIMEOUT_SEC = 600.0
+DEFAULT_VLM_MAX_TOKENS = 2048
+DEFAULT_RECORD_PREROLL_SEC = 5
+
 
 def load(on_dirty: Callable[[], None] | None = None) -> Config:
     """Wczytaj konfigurację aplikacji (ścieżka z platformdirs / portable wg kitu)."""
@@ -162,7 +168,7 @@ def get_litellm_base_url(cfg: Config) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def set_litellm_base_url(cfg: Config, base_url: str) -> None:
+def set_litellm_base_url(cfg: Config, base_url: str | None) -> None:
     """Zapisuje endpoint gatewaya LiteLLM (override sondy)."""
     cfg[_LITELLM_BASE_URL_KEY] = base_url
 
@@ -196,7 +202,7 @@ def get_summary_model_local(cfg: Config) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def set_summary_model_local(cfg: Config, model: str) -> None:
+def set_summary_model_local(cfg: Config, model: str | None) -> None:
     """Zapisuje nazwę modelu lokalnego streszczeń."""
     cfg[_SUMMARY_MODEL_LOCAL_KEY] = model
 
@@ -207,7 +213,7 @@ def get_summary_model_cloud(cfg: Config) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def set_summary_model_cloud(cfg: Config, model: str) -> None:
+def set_summary_model_cloud(cfg: Config, model: str | None) -> None:
     """Zapisuje nazwę modelu chmurowego streszczeń."""
     cfg[_SUMMARY_MODEL_CLOUD_KEY] = model
 
@@ -225,7 +231,12 @@ def get_summary_max_tokens(cfg: Config) -> int:
     zaczną treść — za mały limit kończył się pustym streszczeniem.
     """
     value = cfg.get(_SUMMARY_MAX_TOKENS_KEY)
-    return value if isinstance(value, int) and value > 0 else 4096
+    return value if isinstance(value, int) and value > 0 else DEFAULT_SUMMARY_MAX_TOKENS
+
+
+def set_summary_max_tokens(cfg: Config, tokens: int | None) -> None:
+    """Zapisuje limit tokenów streszczenia; ``None``/0 → default z kodu przy odczycie."""
+    cfg[_SUMMARY_MAX_TOKENS_KEY] = tokens
 
 
 def get_summary_prompt_suffix(cfg: Config) -> str:
@@ -247,7 +258,12 @@ def get_summary_timeout(cfg: Config) -> float:
     value = cfg.get(_SUMMARY_TIMEOUT_KEY)
     if isinstance(value, int | float) and value > 0:
         return float(value)
-    return 600.0
+    return DEFAULT_SUMMARY_TIMEOUT_SEC
+
+
+def set_summary_timeout(cfg: Config, seconds: float | None) -> None:
+    """Zapisuje timeout żądania (s); ``None``/0 → default z kodu przy odczycie."""
+    cfg[_SUMMARY_TIMEOUT_KEY] = seconds
 
 
 def get_summary_chunk_chars(cfg: Config) -> int:
@@ -264,6 +280,11 @@ def get_summary_chunk_chars(cfg: Config) -> int:
     return DEFAULT_SUMMARY_CHUNK_CHARS
 
 
+def set_summary_chunk_chars(cfg: Config, chars: int | None) -> None:
+    """Zapisuje próg podziału map-reduce (znaki); ``None``/0 → default z kodu przy odczycie."""
+    cfg[_SUMMARY_CHUNK_CHARS_KEY] = chars
+
+
 def get_summary_reduce_max_tokens(cfg: Config) -> int:
     """Budżet tokenów wyjścia fazy REDUCE map-reduce (domyślnie 8192).
 
@@ -277,13 +298,18 @@ def get_summary_reduce_max_tokens(cfg: Config) -> int:
     return DEFAULT_SUMMARY_REDUCE_MAX_TOKENS
 
 
+def set_summary_reduce_max_tokens(cfg: Config, tokens: int | None) -> None:
+    """Zapisuje budżet wyjścia reduce; ``None``/0 → default z kodu przy odczycie."""
+    cfg[_SUMMARY_REDUCE_MAX_TOKENS_KEY] = tokens
+
+
 def get_vlm_model_local(cfg: Config) -> str | None:
     """Model VLM lokalny (analiza slajdów przez gateway, np. ``ollama/qwen-vl-local``) lub None."""
     value = cfg.get(_VLM_MODEL_LOCAL_KEY)
     return value if isinstance(value, str) and value else None
 
 
-def set_vlm_model_local(cfg: Config, model: str) -> None:
+def set_vlm_model_local(cfg: Config, model: str | None) -> None:
     """Zapisuje nazwę modelu VLM lokalnego."""
     cfg[_VLM_MODEL_LOCAL_KEY] = model
 
@@ -294,7 +320,7 @@ def get_vlm_model_cloud(cfg: Config) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def set_vlm_model_cloud(cfg: Config, model: str) -> None:
+def set_vlm_model_cloud(cfg: Config, model: str | None) -> None:
     """Zapisuje nazwę modelu VLM chmurowego."""
     cfg[_VLM_MODEL_CLOUD_KEY] = model
 
@@ -306,7 +332,12 @@ def get_vlm_max_tokens(cfg: Config) -> int:
     za mały limit ucinał odczyt (zmierzone w pre-flight). Wartość <= 0 (błędna) spada na default.
     """
     value = cfg.get(_VLM_MAX_TOKENS_KEY)
-    return value if isinstance(value, int) and value > 0 else 2048
+    return value if isinstance(value, int) and value > 0 else DEFAULT_VLM_MAX_TOKENS
+
+
+def set_vlm_max_tokens(cfg: Config, tokens: int | None) -> None:
+    """Zapisuje limit tokenów VLM; ``None``/0 → default z kodu przy odczycie."""
+    cfg[_VLM_MAX_TOKENS_KEY] = tokens
 
 
 def get_record_preroll_sec(cfg: Config) -> int:
@@ -317,7 +348,48 @@ def get_record_preroll_sec(cfg: Config) -> int:
     przed treścią. FFmpeg NIE tnie (trim samego wideo rozjeżdżał A/V).
     """
     value = cfg.get(_RECORD_PREROLL_KEY)
-    return value if isinstance(value, int) and value >= 0 else 5
+    return value if isinstance(value, int) and value >= 0 else DEFAULT_RECORD_PREROLL_SEC
+
+
+def set_record_preroll_sec(cfg: Config, seconds: int | None) -> None:
+    """Zapisuje pre-roll nagrania (s); ``None`` → default. 0 to poprawna wartość (bez pre-rolla)."""
+    cfg[_RECORD_PREROLL_KEY] = seconds
+
+
+# ── Odczyt SUROWY wartości liczbowych (jawnie ustawiona vs default) — dla dialogu Ustawień ─────
+# Gettery wyżej zwracają default przy braku klucza; dialog potrzebuje wiedzieć, czy pole jest
+# ustawione JAWNIE (żeby pokazać default jako placeholder przy 0/pusto), stąd wersje „_override".
+
+
+def _positive_int_override(cfg: Config, key: str) -> int | None:
+    value = cfg.get(key)
+    return value if isinstance(value, int) and value > 0 else None
+
+
+def get_summary_timeout_override(cfg: Config) -> int | None:
+    """Jawnie ustawiony timeout streszczenia (s) albo ``None`` (dialog pokaże default)."""
+    value = cfg.get(_SUMMARY_TIMEOUT_KEY)
+    return int(value) if isinstance(value, int | float) and value > 0 else None
+
+
+def get_summary_max_tokens_override(cfg: Config) -> int | None:
+    """Jawnie ustawiony limit tokenów streszczenia albo ``None``."""
+    return _positive_int_override(cfg, _SUMMARY_MAX_TOKENS_KEY)
+
+
+def get_summary_reduce_max_tokens_override(cfg: Config) -> int | None:
+    """Jawnie ustawiony budżet reduce albo ``None``."""
+    return _positive_int_override(cfg, _SUMMARY_REDUCE_MAX_TOKENS_KEY)
+
+
+def get_summary_chunk_chars_override(cfg: Config) -> int | None:
+    """Jawnie ustawiony próg map-reduce albo ``None``."""
+    return _positive_int_override(cfg, _SUMMARY_CHUNK_CHARS_KEY)
+
+
+def get_vlm_max_tokens_override(cfg: Config) -> int | None:
+    """Jawnie ustawiony limit tokenów VLM albo ``None``."""
+    return _positive_int_override(cfg, _VLM_MAX_TOKENS_KEY)
 
 
 # ── Profil obliczeniowy per maszyna (nadpisanie tieru) ─────────────────────────

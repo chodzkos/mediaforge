@@ -153,6 +153,12 @@ class MainWindow(QMainWindow):
         self._sync_theme_button()
         bar.addWidget(self._theme_button)
 
+        settings = QToolButton()
+        settings.setText("⚙")
+        settings.setToolTip("Ustawienia (modele AI, gateway, limity)")
+        settings.clicked.connect(lambda: self._library.open_settings(self))
+        bar.addWidget(settings)
+
         bar.addWidget(self._build_help_button())
 
         return bar

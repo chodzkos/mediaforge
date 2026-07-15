@@ -82,6 +82,24 @@ def test_library_filters_by_category(
     assert widget._list.count() == 1
 
 
+def test_notes_refusal_points_to_settings_not_config(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Odmowa notatek bez modelu VLM wskazuje Ustawienia (regresja: koniec „w configu")."""
+    db = _isolate(monkeypatch, tmp_path)
+    _seed(db, tmp_path, "Wyklad", category="Sieci", tags=["tcp"])
+
+    widget = LibraryWidget()
+    qtbot.addWidget(widget)
+    widget._list.setCurrentRow(0)
+
+    widget._on_notes()  # brak vlm_model → odmowa (log błędu)
+    log = widget._log.toPlainText()
+    assert "Ustawieni" in log  # „w Ustawieniach (ikona zębatki)"
+    assert "w configu" not in log  # antywzorzec usunięty
+    assert JobStore(db).list_jobs() == []
+
+
 def test_transcribe_button_enqueues_job(
     qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

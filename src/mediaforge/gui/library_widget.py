@@ -63,6 +63,7 @@ from mediaforge.core.library.db import Database
 from mediaforge.core.library.material import MaterialMetadata, write_metadata
 from mediaforge.core.library.recordings import RecordingStore
 from mediaforge.gui.material_details import MaterialDetailsPanel
+from mediaforge.gui.settings_dialog import SettingsDialog
 
 _ALL = "(wszystkie)"
 # Kolory statusów zadań w LogView (role palety — przeżywają zmianę motywu).
@@ -96,6 +97,34 @@ class LibraryWidget(QWidget):
         self._queue.register(JOB_IMPORT, make_import_handler(ImporterEngine(store=self._store)))
         self._queue.register(JOB_TRANSCRIBE, make_transcribe_handler(self._store, self._backend()))
         self._queue.register(
+            JOB_DOWNLOAD, make_download_handler(DownloaderEngine(store=self._store))
+        )
+        self.reload_ai_handlers()  # JOB_SUMMARIZE + JOB_NOTES z configu (re-rejestrowalne)
+        self._seen: dict[int, str] = {}
+        self._poll = QTimer(self)
+        self._poll.setInterval(800)
+        self._poll.timeout.connect(self._poll_jobs)
+
+        self._build_ui()
+        self.refresh_all()
+
+    def _backend(self) -> WhisperCppBackend:
+        """Backend whisper.cpp z configu (binarka/model/wątki) dla handlera transkrypcji."""
+        return WhisperCppBackend(
+            model=cfg_mod.get_whisper_model(self._config) or "",
+            whisper_cli=cfg_mod.get_whispercpp_path(self._config) or "whisper-cli",
+            threads=cfg_mod.get_whisper_threads(self._config),
+        )
+
+    def reload_ai_handlers(self) -> None:
+        """(Re)rejestruje handlery AI (streszczenie + notatki) z configu i świeżych klientów.
+
+        Wołane przy starcie i po zapisie Ustawień. ``JobQueue.register`` nadpisuje handler dla typu,
+        więc następne zadanie użyje nowych modeli/gatewaya/limitów — bez restartu aplikacji (job już
+        uruchomiony dokańcza się starym handlerem). Klienci (``SummaryClient``/``VisionClient``)
+        czytają config przy budowie, więc też odświeżają base_url/timeout/limity.
+        """
+        self._queue.register(
             JOB_SUMMARIZE,
             make_summarize_handler(
                 self._store,
@@ -118,24 +147,13 @@ class LibraryWidget(QWidget):
                 llm_cloud=cfg_mod.get_summary_model_cloud(self._config),
             ),
         )
-        self._queue.register(
-            JOB_DOWNLOAD, make_download_handler(DownloaderEngine(store=self._store))
-        )
-        self._seen: dict[int, str] = {}
-        self._poll = QTimer(self)
-        self._poll.setInterval(800)
-        self._poll.timeout.connect(self._poll_jobs)
 
-        self._build_ui()
-        self.refresh_all()
-
-    def _backend(self) -> WhisperCppBackend:
-        """Backend whisper.cpp z configu (binarka/model/wątki) dla handlera transkrypcji."""
-        return WhisperCppBackend(
-            model=cfg_mod.get_whisper_model(self._config) or "",
-            whisper_cli=cfg_mod.get_whispercpp_path(self._config) or "whisper-cli",
-            threads=cfg_mod.get_whisper_threads(self._config),
+    def open_settings(self, parent: QWidget | None = None) -> None:
+        """Otwiera dialog Ustawień AI; po zapisie re-rejestruje handlery (config od next joba)."""
+        dialog = SettingsDialog(
+            parent or self, config=self._config, on_saved=self.reload_ai_handlers
         )
+        dialog.exec()
 
     def _summary_client(self) -> SummaryClient:
         """Klient gatewaya LiteLLM z configu — endpoint/język/limity + opcjonalny master key.
@@ -503,7 +521,7 @@ class LibraryWidget(QWidget):
             return
         if not cfg_mod.get_summary_model_local(self._config):
             self._log.append_line(
-                "Ustaw summary_model_local w configu (sprawdź `doctor`) — brak modelu lokalnego.",
+                "Ustaw model streszczeń w Ustawieniach (ikona zębatki w prawym górnym rogu).",
                 "error",
             )
             return
@@ -532,7 +550,7 @@ class LibraryWidget(QWidget):
             return
         if not cfg_mod.get_vlm_model_local(self._config):
             self._log.append_line(
-                "Ustaw vlm_model_local w configu (sprawdź `doctor`) — brak modelu VLM.",
+                "Ustaw model VLM (Notatki) w Ustawieniach (ikona zębatki w prawym górnym rogu).",
                 "error",
             )
             return
