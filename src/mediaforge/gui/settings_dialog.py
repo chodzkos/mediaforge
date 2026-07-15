@@ -1,4 +1,4 @@
-"""Dialog Ustawień AI — edycja kluczy configu (gateway, streszczenia, notatki VLM, nagrywanie).
+"""Dialog Ustawień AI — edycja kluczy configu (gateway, transkrypcja, streszczenia, notatki, nagr.).
 
 Koniec ręcznego ``uv run python -c "c.set(...)"`` w terminalu: wszystkie klucze, które
 użytkownik bez znajomości kodu MUSI móc zmienić, mają widget. Klucze wewnętrzne (np.
@@ -16,7 +16,9 @@ sieci.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
+from pathlib import Path
 
 from chodzkos_gui_kit.config import Config
 from chodzkos_gui_kit.qt.theme import current_palette
@@ -24,6 +26,7 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -36,9 +39,15 @@ from PySide6.QtWidgets import (
 )
 
 from mediaforge.core import config as cfg_mod
+from mediaforge.core.ai.transcribe import cached_whisper_runtime
 from mediaforge.core.detection import tools as detect_tools
 
 _DEFAULT_BASE_URL = "http://localhost:4000"
+# Filtr wyboru binarki whisper.cpp — na Windows *.exe, gdzie indziej dowolny plik.
+_BINARY_FILTER = (
+    "Programy (*.exe);;Wszystkie pliki (*)" if sys.platform == "win32" else "Wszystkie pliki (*)"
+)
+_MODEL_FILTER = "Modele whisper.cpp (*.bin);;Wszystkie pliki (*)"
 
 
 def gateway_summary(available: bool, models: list[str]) -> tuple[bool, str]:
@@ -61,6 +70,29 @@ def validate_model(available: bool, models: list[str], model: str) -> tuple[bool
     return False, f"✗ brak na gatewayu — dostępne: {listed}"
 
 
+def whisper_binary_summary(available: bool, version: str) -> tuple[bool, str]:
+    """Wynik sprawdzenia binarki whisper.cpp (pole ścieżki): znaleziona + wersja albo hint."""
+    if not available:
+        return False, "✗ nie znaleziono whisper-cli — wskaż binarkę whisper.cpp (build/bin/…)"
+    return True, f"✓ whisper.cpp OK{f' ({version})' if version else ''}"
+
+
+def whisper_model_summary(
+    bin_available: bool, model_set: bool, model_exists: bool, runtime: str
+) -> tuple[bool, str]:
+    """Wynik sprawdzenia modelu: plik istnieje + realny runtime (CUDA/CPU) albo czytelny hint."""
+    if not model_set:
+        return False, "✗ wskaż plik modelu (.bin)"
+    if not model_exists:
+        return False, "✗ plik modelu nie istnieje — sprawdź ścieżkę"
+    if not bin_available:
+        return False, "✗ najpierw wskaż działającą binarkę whisper.cpp (pole wyżej)"
+    label = {"cuda": "CUDA", "cpu": "CPU"}.get(runtime)
+    if label is None:
+        return False, "✗ whisper-cli nie ruszył na modelu — sprawdź build CUDA / plik modelu"
+    return True, f"✓ model OK — runtime: {label}"
+
+
 class _GatewayProbe(QThread):
     """Sonda gatewaya (``/v1/models``) w wątku roboczym — HTTP nie blokuje wątku UI."""
 
@@ -73,6 +105,40 @@ class _GatewayProbe(QThread):
     def run(self) -> None:
         report = detect_tools.check_litellm(self._base_url or _DEFAULT_BASE_URL)
         self.probed.emit(bool(report.get("available")), list(report.get("models") or []))
+
+
+class _WhisperProbe(QThread):
+    """Sonda whisper.cpp (binarka + opcjonalny runtime na modelu) w wątku roboczym.
+
+    Reużywa sond doctora: ``check_whispercpp`` (binarka) i ``cached_whisper_runtime`` (empiryczny
+    runtime CUDA/CPU — ładuje model ~1-2 s, dlatego poza wątkiem UI, jak „Sprawdź" gatewaya).
+    """
+
+    probed = Signal(bool, str, bool, str)  # (bin_available, version, model_exists, runtime)
+
+    def __init__(
+        self,
+        whispercpp_path: str,
+        whisper_model: str,
+        *,
+        want_runtime: bool,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._path = whispercpp_path
+        self._model = whisper_model
+        self._want_runtime = want_runtime
+
+    def run(self) -> None:
+        wh = detect_tools.check_whispercpp(self._path or None)
+        available = bool(wh.get("available"))
+        version = str(wh.get("version") or "")
+        model_exists = bool(self._model) and Path(self._model).is_file()
+        runtime = "unknown"
+        if self._want_runtime and available and model_exists:
+            cli = str(wh.get("path") or "whisper-cli")
+            runtime = cached_whisper_runtime(cli, self._model)
+        self.probed.emit(available, version, model_exists, runtime)
 
 
 class SettingsDialog(QDialog):
@@ -91,7 +157,9 @@ class SettingsDialog(QDialog):
         self._config = config
         self._on_saved = on_saved
         self._probe: _GatewayProbe | None = None
-        self._pending: str | None = None  # id pola, dla którego trwa „Sprawdź"
+        self._pending: str | None = None  # id pola, dla którego trwa „Sprawdź" (gateway)
+        self._whisper_probe: _WhisperProbe | None = None
+        self._whisper_pending: str | None = None  # id pola, dla którego trwa „Sprawdź" (whisper)
         self._result_labels: dict[str, QLabel] = {}
         self._model_edits: dict[str, QLineEdit] = {}
         self._build_ui()
@@ -102,6 +170,7 @@ class SettingsDialog(QDialog):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.addWidget(self._gateway_group())
+        root.addWidget(self._transcription_group())
         root.addWidget(self._summaries_group())
         root.addWidget(self._notes_group())
         root.addWidget(self._recording_group())
@@ -132,6 +201,26 @@ class SettingsDialog(QDialog):
         self._base_url.setPlaceholderText(_DEFAULT_BASE_URL)
         form.addRow("Adres gatewaya (LiteLLM):", self._model_row(self._base_url, "base_url"))
         form.addRow("", self._result_labels["base_url"])
+        return box
+
+    def _transcription_group(self) -> QGroupBox:
+        box = QGroupBox("Transkrypcja")
+        form = QFormLayout(box)
+        self._whispercpp_path = QLineEdit()
+        self._whispercpp_path.setPlaceholderText("puste = autodetekcja z PATH (whisper-cli)")
+        form.addRow(
+            "Binarka whisper.cpp:",
+            self._path_row(self._whispercpp_path, "whispercpp_path", browse_filter=_BINARY_FILTER),
+        )
+        form.addRow("", self._result_labels["whispercpp_path"])
+
+        self._whisper_model = QLineEdit()
+        self._whisper_model.setPlaceholderText("ścieżka do modelu .bin (wymagany do transkrypcji)")
+        form.addRow(
+            "Model (.bin):",
+            self._path_row(self._whisper_model, "whisper_model", browse_filter=_MODEL_FILTER),
+        )
+        form.addRow("", self._result_labels["whisper_model"])
         return box
 
     def _summaries_group(self) -> QGroupBox:
@@ -198,11 +287,37 @@ class SettingsDialog(QDialog):
         self._result_labels[field_id].setWordWrap(True)
         return wrapper
 
+    def _path_row(self, edit: QLineEdit, field_id: str, *, browse_filter: str) -> QWidget:
+        """Wiersz: pole ścieżki + „Przeglądaj" (wybór pliku) + „Sprawdź" (sonda whisper.cpp)."""
+        wrapper = QWidget()
+        row = QHBoxLayout(wrapper)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(edit)
+        browse = QPushButton("Przeglądaj")
+        browse.clicked.connect(lambda: self._browse(edit, browse_filter))
+        row.addWidget(browse)
+        check = QPushButton("Sprawdź")
+        check.clicked.connect(lambda: self._check_whisper(field_id))
+        row.addWidget(check)
+        self._result_labels[field_id] = QLabel("")
+        self._result_labels[field_id].setWordWrap(True)
+        return wrapper
+
+    def _browse(self, edit: QLineEdit, file_filter: str) -> None:
+        """Wybór pliku do pola ścieżki; anulowanie zostawia dotychczasową wartość."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Wybierz plik", edit.text().strip(), file_filter
+        )
+        if path:
+            edit.setText(path)
+
     # ── Ładowanie / zapis ─────────────────────────────────────────────────────
 
     def _load(self) -> None:
         c = self._config
         self._base_url.setText(cfg_mod.get_litellm_base_url(c) or "")
+        self._whispercpp_path.setText(cfg_mod.get_whispercpp_path(c) or "")
+        self._whisper_model.setText(cfg_mod.get_whisper_model(c) or "")
         self._summary_local.setText(cfg_mod.get_summary_model_local(c) or "")
         self._summary_cloud.setText(cfg_mod.get_summary_model_cloud(c) or "")
         self._summary_timeout.setValue(cfg_mod.get_summary_timeout_override(c) or 0)
@@ -217,6 +332,8 @@ class SettingsDialog(QDialog):
     def _save(self) -> None:
         c = self._config
         cfg_mod.set_litellm_base_url(c, self._base_url.text().strip() or None)
+        cfg_mod.set_whispercpp_path(c, self._whispercpp_path.text().strip() or None)
+        cfg_mod.set_whisper_model(c, self._whisper_model.text().strip() or None)
         cfg_mod.set_summary_model_local(c, self._summary_local.text().strip() or None)
         cfg_mod.set_summary_model_cloud(c, self._summary_cloud.text().strip() or None)
         cfg_mod.set_summary_timeout(c, _spin_value(self._summary_timeout))
@@ -258,6 +375,38 @@ class SettingsDialog(QDialog):
             _ok, message = validate_model(available, models, model)
         self._result_labels[field_id].setText(message)
         self._pending = None
+
+    # ── „Sprawdź" whisper.cpp (binarka + runtime na modelu) ─────────────────────
+
+    def _check_whisper(self, field_id: str) -> None:
+        if self._whisper_probe is not None and self._whisper_probe.isRunning():
+            return
+        self._whisper_pending = field_id
+        self._result_labels[field_id].setText("sprawdzam…")
+        # Runtime (CUDA/CPU) sprawdzamy tylko przy polu modelu — wymaga binarki I modelu.
+        probe = _WhisperProbe(
+            self._whispercpp_path.text().strip(),
+            self._whisper_model.text().strip(),
+            want_runtime=field_id == "whisper_model",
+            parent=self,
+        )
+        probe.probed.connect(self._on_whisper_probed)
+        self._whisper_probe = probe
+        probe.start()
+
+    def _on_whisper_probed(
+        self, bin_available: bool, version: str, model_exists: bool, runtime: str
+    ) -> None:
+        field_id = self._whisper_pending
+        if field_id is None:
+            return
+        if field_id == "whispercpp_path":
+            _ok, message = whisper_binary_summary(bin_available, version)
+        else:
+            model_set = bool(self._whisper_model.text().strip())
+            _ok, message = whisper_model_summary(bin_available, model_set, model_exists, runtime)
+        self._result_labels[field_id].setText(message)
+        self._whisper_pending = None
 
 
 def _spin(

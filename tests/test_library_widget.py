@@ -10,9 +10,11 @@ from pytestqt.qtbot import QtBot
 
 from mediaforge.core import config as cfg_mod
 from mediaforge.core.jobs import JobStore
+from mediaforge.core.jobs.handlers import JOB_TRANSCRIBE
 from mediaforge.core.library.db import Database
 from mediaforge.core.library.material import MaterialMetadata, read_metadata, write_metadata
 from mediaforge.core.library.recordings import RecordingStore
+from mediaforge.gui import library_widget as library_widget_mod
 from mediaforge.gui.import_dialog import ImportDialog
 from mediaforge.gui.library_widget import LibraryWidget
 
@@ -120,6 +122,49 @@ def test_transcribe_button_enqueues_job(
     jobs = JobStore(db).list_jobs()
     assert len(jobs) == 1 and jobs[0].job_type == "transcribe"
     assert jobs[0].recording_id is not None
+
+
+def test_transcribe_refusal_points_to_settings_not_config(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Odmowa transkrypcji bez modelu wskazuje Ustawienia (regresja: koniec „w configu")."""
+    db = _isolate(monkeypatch, tmp_path)
+    _seed(db, tmp_path, "Wyklad", category="Sieci", tags=["tcp"])
+
+    widget = LibraryWidget()
+    qtbot.addWidget(widget)
+    widget._list.setCurrentRow(0)
+
+    widget._on_transcribe()  # brak whisper_model → odmowa (log błędu)
+    log = widget._log.toPlainText()
+    assert "Ustawieni" in log  # „w Ustawieniach (ikona zębatki → Transkrypcja)"
+    assert "w configu" not in log  # antywzorzec usunięty
+    assert JobStore(db).list_jobs() == []
+
+
+def test_reload_ai_handlers_reregisters_transcribe(
+    qtbot: QtBot, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Transkrypcja czyta config przy rejestracji → reload (po zapisie Ustawień) ją obejmuje.
+
+    Bez tego zmiana whisper_model/whispercpp_path działałaby dopiero po restarcie aplikacji.
+    """
+    _isolate(monkeypatch, tmp_path)
+    widget = LibraryWidget()
+    qtbot.addWidget(widget)
+
+    registered: list[str] = []
+    monkeypatch.setattr(
+        widget._queue, "register", lambda job_type, handler: registered.append(job_type)
+    )
+    widget.reload_ai_handlers()
+    assert JOB_TRANSCRIBE in registered  # nie tylko summarize/notes
+
+
+def test_library_widget_refusals_avoid_w_configu() -> None:
+    """Strażnik: żadna odmowa w library_widget nie odsyła „w configu" (user idzie do Ustawień)."""
+    src = Path(library_widget_mod.__file__).read_text(encoding="utf-8")
+    assert "w configu" not in src
 
 
 def test_attach_slides_button_copies_and_shows_gallery(

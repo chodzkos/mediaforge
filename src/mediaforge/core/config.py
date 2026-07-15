@@ -157,8 +157,8 @@ def get_whispercpp_path(cfg: Config) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def set_whispercpp_path(cfg: Config, path: str) -> None:
-    """Zapisuje ścieżkę binarki whisper.cpp (override sondy)."""
+def set_whispercpp_path(cfg: Config, path: str | None) -> None:
+    """Zapisuje ścieżkę binarki whisper.cpp (override sondy); ``None`` = wyczyść (autodetekcja)."""
     cfg[_WHISPERCPP_PATH_KEY] = path
 
 
@@ -179,8 +179,8 @@ def get_whisper_model(cfg: Config) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def set_whisper_model(cfg: Config, path: str) -> None:
-    """Zapisuje ścieżkę modelu whisper.cpp."""
+def set_whisper_model(cfg: Config, path: str | None) -> None:
+    """Zapisuje ścieżkę modelu whisper.cpp; ``None`` = wyczyść (transkrypcja niedostępna)."""
     cfg[_WHISPER_MODEL_KEY] = path
 
 
