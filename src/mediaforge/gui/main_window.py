@@ -1,6 +1,6 @@
 """Powłoka głównego okna mediaforge — wpina chodzkos-gui-kit (S0).
 
-Górny pasek wg GUI_STANDARD §6 (logo + przełącznik motywu + About), pusta
+Górny pasek wg GUI_STANDARD §6 (logo + przełącznik motywu + ikonka pomocy/O programie), pusta
 biblioteka (placeholder), strumień statusu przez kitowy ``LogView`` i dolny pasek
 z wykrytymi narzędziami (ffmpeg/whisper/CUDA + tier). Motyw i belkę DWM liczy
 ``ThemeManager`` kitu; geometria okna persystowana przez ``Config`` (nie QSettings).
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -110,7 +111,6 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
-        self._build_menu()
         root.addLayout(self._build_topbar())
 
         self._library = LibraryWidget()
@@ -153,22 +153,38 @@ class MainWindow(QMainWindow):
         self._sync_theme_button()
         bar.addWidget(self._theme_button)
 
+        bar.addWidget(self._build_help_button())
+
         return bar
 
-    def _build_menu(self) -> None:
-        """Menu „Pomoc": Pomoc (F1) → okno pomocy z zakładkami; O programie → dialog kitowy."""
-        help_menu = self.menuBar().addMenu("&Pomoc")
+    def _build_help_button(self) -> QToolButton:
+        """Ikonka pomocy w prawym górnym rogu (GUI_STANDARD §6) z rozwijanym menu.
 
-        help_action = QAction("&Pomoc", self)
+        Meta-funkcje idą w górny pasek obok przełącznika motywu (jak pdf2md/epubforge), NIE w
+        klasyczny ``QMenuBar`` (niezgodny z §6). Menu w dół: „Pomoc" (F1) i „O programie". Skrót
+        F1 zostaje — akcja jest zarejestrowana na oknie (``addAction``), więc działa też przy
+        zamkniętym menu. Zachowanie okien bez zmian — zmienia się wyłącznie miejsce wywołania.
+        """
+        button = QToolButton()
+        button.setText("ⓘ")
+        button.setToolTip("Pomoc (F1) i o programie")
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+
+        self._help_menu = QMenu(button)
+        help_action = QAction("Pomoc", self)
         help_action.setShortcut(QKeySequence.StandardKey.HelpContents)  # F1
         help_action.triggered.connect(lambda: open_help(self))
-        help_menu.addAction(help_action)
+        self.addAction(help_action)  # skrót F1 aktywny na oknie, niezależnie od otwarcia menu
+        self._help_menu.addAction(help_action)
 
-        help_menu.addSeparator()
+        self._help_menu.addSeparator()
 
-        about_action = QAction("&O programie", self)
+        about_action = QAction("O programie", self)
         about_action.triggered.connect(lambda: open_about(self))
-        help_menu.addAction(about_action)
+        self._help_menu.addAction(about_action)
+
+        button.setMenu(self._help_menu)
+        return button
 
     # ── Nagrywanie ──────────────────────────────────────────────────────────--
 

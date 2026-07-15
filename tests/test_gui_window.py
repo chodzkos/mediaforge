@@ -44,20 +44,39 @@ def _make_window(
     return window
 
 
-def test_help_menu_has_help_f1_and_about(
+def test_help_is_topbar_icon_not_menubar(
     qtbot: QtBot, qapp: QApplication, cfg: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Menu „Pomoc" ma akcję Pomoc (skrót F1) i „O programie"."""
+    """Pomoc/O programie to ikonka „ⓘ" w prawym górnym rogu (GUI_STANDARD §6), NIE QMenuBar."""
     from PySide6.QtGui import QKeySequence
-    from PySide6.QtWidgets import QMenu
+    from PySide6.QtWidgets import QMenu, QToolButton
+
+    from mediaforge.gui import main_window as mw
 
     window = _make_window(qtbot, qapp, cfg, monkeypatch)
-    menus = {m.title(): m for m in window.menuBar().findChildren(QMenu)}
-    assert "&Pomoc" in menus
-    actions = {a.text(): a for a in menus["&Pomoc"].actions() if a.text()}
-    assert "&Pomoc" in actions and "&O programie" in actions
-    # Pomoc pod F1 (StandardKey.HelpContents mapuje się na F1).
-    assert actions["&Pomoc"].shortcut() == QKeySequence(QKeySequence.StandardKey.HelpContents)
+
+    # QMenuBar nie zawiera „Pomoc" (menu przeniesione do paska; menuBar() może być pusty).
+    menubar_titles = [m.title() for m in window.menuBar().findChildren(QMenu)]
+    assert all("Pomoc" not in t for t in menubar_titles)
+
+    # Ikonka „ⓘ" w pasku, z rozwijanym menu (InstantPopup) i dwoma pozycjami.
+    help_btn = next(
+        b for b in window.findChildren(QToolButton) if b.text() == "ⓘ" and b.menu() is not None
+    )
+    assert help_btn.popupMode() == QToolButton.ToolButtonPopupMode.InstantPopup
+    labels = [a.text() for a in help_btn.menu().actions() if a.text()]
+    assert labels == ["Pomoc", "O programie"]
+
+    # Skrót F1 zachowany i zarejestrowany na oknie; otwiera Pomoc (bez modala — spy).
+    f1 = QKeySequence(QKeySequence.StandardKey.HelpContents)
+    help_action = next(a for a in help_btn.menu().actions() if a.text() == "Pomoc")
+    assert help_action.shortcut() == f1
+    assert help_action in window.actions()  # window-scoped → działa spoza otwartego menu
+
+    opened: list[bool] = []
+    monkeypatch.setattr(mw, "open_help", lambda _parent=None: opened.append(True))
+    help_action.trigger()
+    assert opened == [True]
 
 
 def test_window_starts_with_status_and_log(
