@@ -79,6 +79,21 @@ def test_help_is_topbar_icon_not_menubar(
     assert opened == [True]
 
 
+def test_settings_gear_button_opens_settings(
+    qtbot: QtBot, qapp: QApplication, cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ikonka zębatki „⚙" w pasku otwiera Ustawienia (library.open_settings)."""
+    from PySide6.QtWidgets import QToolButton
+
+    window = _make_window(qtbot, qapp, cfg, monkeypatch)
+    gear = next(b for b in window.findChildren(QToolButton) if b.text() == "⚙")
+
+    called: list[bool] = []
+    monkeypatch.setattr(window._library, "open_settings", lambda _parent=None: called.append(True))
+    gear.click()
+    assert called == [True]
+
+
 def test_window_starts_with_status_and_log(
     qtbot: QtBot, qapp: QApplication, cfg: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
