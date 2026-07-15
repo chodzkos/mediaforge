@@ -164,7 +164,7 @@ Wszystkie aplikacje (chodzkos) stoją na wspólnym kicie. mediaforge **konsumuje
 | Ikony przebarwialne wg motywu | `qt.icons.get_icon` / `ICON_MAP` / `clear_cache` |
 
 **Reguły konsumenta (egzekwowane też w kicie):**
-- **Pin do TAGA**, nigdy `main`. Podniesienie wersji = osobny commit `chore:` + testy.
+- **Pin po SHA** commitu z komentarzem wersji (`git+...@<SHA>  # vX.Y.Z`), **nigdy sam tag i nigdy `main`**. Tagi gitowe są mutowalne (lightweight = ruchoma nazwa), SHA jest niezmienny — decyzja supply-chain z audytu 07.2026, spójna z `gui-kit/CLAUDE.md`. Podniesienie wersji = osobny commit `chore:` + testy.
 - **Zero hardcodowanych hexów** w `gui/` — kolory wyłącznie z palety/ról kitu (hexy żyją tylko w `palette.py` kitu).
 - **Nie nadstylizowuj generycznych widgetów** (`QToolButton`, `QLineEdit`, `QComboBox`) globalnym QSS — app-QSS przecieka do nienatywnych dialogów kitu i psuje przypięte przyciski (pułapka §4 standardu). Stylizuj per-widget.
 - **Debounce configu** po stronie GUI: `Config(on_dirty=...)` → `QTimer` → `flush()` po ~1 s.
