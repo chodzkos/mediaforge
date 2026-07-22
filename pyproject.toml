@@ -38,7 +38,7 @@ search = [
     # baza wektorowa do semantic search dobrana na etapie S7 (LanceDB/Chroma/Qdrant)
 ]
 dev = [
-    "ruff>=0.15.21",
+    "ruff>=0.15.22",
     "mypy>=2.3.0",
     "pytest>=8",
     "pytest-qt>=4.4",
