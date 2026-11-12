@@ -39,10 +39,12 @@ Jeden Protocol, wiele implementacji — auto-dobór z możliwością ręcznego n
 ```python
 class AcquisitionEngine(Protocol):
     name: str
+
     def can_handle(self, source: Source) -> bool: ...
     def probe(self, source: Source) -> list[QualityOption]: ...
-    def acquire(self, source: Source, opts: AcquireOptions,
-                progress: ProgressCb) -> MediaArtifact: ...
+    def acquire(
+        self, source: Source, opts: AcquireOptions, progress: ProgressCb
+    ) -> MediaArtifact: ...
 ```
 
 Implementacje: `RecorderEngine` (rdzeń produktu), `ImporterEngine`, `DownloaderEngine` (yt-dlp, etap późny). Selektor: jeśli źródło to plik lokalny → importer; jeśli URL bez DRM obsługiwany przez yt-dlp → downloader; w pozostałych przypadkach → nagrywanie ekranu jako uniwersalny fallback.
